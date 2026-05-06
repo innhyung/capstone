@@ -40,8 +40,8 @@
           <horizontal>
             <samples>360</samples>
             <resolution>1</resolution>
-            <min_angle>-1.7453</min_angle>
-            <max_angle>1.7453</max_angle>
+            <min_angle>-2.0</min_angle>
+            <max_angle>2.0</max_angle>
 
           </horizontal>
         </scan>

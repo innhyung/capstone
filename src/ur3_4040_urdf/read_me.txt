@@ -355,13 +355,94 @@
 
 
 --------------------------------------------------------------------------------
- 8. 참고 문서
+ 8. simple_room (real_robot 패키지) — 작은 방 시뮬 + 실물 운영용
 --------------------------------------------------------------------------------
 
-  docs/autonomous_exploration_debug_report.md : 단계별 디버깅 결과
-  docs/paper_draft.md                          : 논문 초안 (A4 절반 분량)
+  warehouse(30 × 24 m)는 합판 작업이 너무 커서, 조원이 실물 재현 가능한
+  작은 방(3.0 × 5.0 m)을 별도 패키지 real_robot 에 구축.
+
+ [구조]
+   real_robot/
+   ├── worlds/simple_room.sdf            : 방 내부 3.0×5.0m, 칸막이 3.6m,
+   │                                       위쪽 통로 1.4m, 책상 1개
+   ├── launch/
+   │   ├── gazebo_simple_room.launch.py
+   │   ├── map_building_simple_room.launch.py
+   │   └── navigate_simple_room.launch.py
+   ├── config/slam_params_simple_room.yaml : 단조 환경용 SLAM 파라미터
+   │                                          (minimum_score 0.3 등)
+   ├── maps/simple_room_map.{pgm,yaml}    : 매핑 결과 저장 위치
+   └── docs/simple_room_report.md         : 작업 보고서 (1~9절 + 부록)
+
+ [robot 사양]
+   - Spawn 좌표: (0.8, -1.0, 0.15), yaw = π/2 (북향)
+   - UR3 팔: 시뮬용으로 모든 joint 를 fixed 로 변경 + 자세를 위로 곧게
+     (ur3_arm.xacro 의 shoulder_pan/lift, elbow, wrist_1/2/3 type=fixed,
+      shoulder_lift/wrist_1 의 origin rpy 0 π/2 0 → 0 0 0)
+     → 시뮬에서 gravity drop 없이 candle pose 유지
+     주의: UR3 manipulation (MoveIt 등) 사용 시 fixed → revolute 되돌려야 함
+
+ [좌표계]
+   3가지 frame 일치 (CCTV 비전 시스템 통합 위함):
+     world  = 방 정중앙 (CCTV 캘리브레이션 좌표)
+     map    = SLAM 의 robot spawn 기준 (동적, SLAM 발행)
+     odom   = Gazebo diff_drive 발행
+
+   world → map 정적 TF (map_building_simple_room.launch.py 안에서 발행):
+     translation = (0.8, -1.0, 0)
+     rotation    = (yaw=π/2, pitch=0, roll=0)
+
+ [사용 명령]
+
+   # 매핑
+   ros2 launch real_robot map_building_simple_room.launch.py
+
+   # 매핑 저장
+   cd ~/ur3/src/real_robot/maps
+   ros2 run nav2_map_server map_saver_cli -f simple_room_map \
+     --ros-args -p map_subscribe_transient_local:=true
+
+   # 자율 주행 (저장된 맵 기반)
+   ros2 launch real_robot navigate_simple_room.launch.py
+
+ [Sweet spot 설정 (warning: 함부로 흔들지 말 것)]
+   nav2 매핑 단계 RewrittenYaml override:
+     inflation_radius           = 0.4   (벽까지 path 0.74m)
+     footprint_padding          = 0.05  (UR3 일부 보호 한계값)
+     desired_linear_vel         = 0.25  (좁은 방 천천히)
+     cost_scaling_dist/gain     = 1.0 / 2.5
+     yaw_goal_tolerance         = 3.14  (매핑 동안만)
+   부트스트랩 회전:
+     원형 궤적 (linear.x=0.05, angular.z=0.3, 22초, 반경 0.17m)
+
+   ※ inflation 을 0.55 이상으로 올리면 통로(1.4m) path 거부 → 매핑 중단됨.
+   ※ footprint_padding 을 0.1 로 올려도 동일하게 막힘. 0.05 가 한계.
+   ※ minimum_score 가 default(0.5)면 단조 환경에서 scan match 거부 →
+      회전 중 매핑 갱신 안 됨. 0.3 이 안정성-완성도 절충점.
+
+ [실물 이전 시]
+   gazebo_simple_room.launch.py 의 Gazebo include 부분만 실물 driver
+   (rplidar, bno055, 모터 driver) launch 로 교체. SLAM/Nav2/world TF 그대로.
+   robot 을 정확히 같은 위치 (방 정중앙에서 동 0.8m, 남 1.0m, 북향) 에서
+   매핑 시작 → world 좌표계가 시뮬과 일치 → CCTV 비전 통합 가능.
+
+ 자세한 내용은 src/real_robot/docs/simple_room_report.md 참조.
 
 
 --------------------------------------------------------------------------------
- 작성: 2026-05-03
+ 9. 참고 문서
+--------------------------------------------------------------------------------
+
+  src/ur3_4040_urdf/docs/autonomous_exploration_debug_report.md
+    : warehouse 환경 매핑/주행 단계별 디버깅 결과 (1~12절)
+
+  src/ur3_4040_urdf/docs/paper_draft.md
+    : 논문 초안 (A4 절반 분량)
+
+  src/real_robot/docs/simple_room_report.md
+    : simple_room 시뮬 환경 구축 보고서 (1~9절 + 부록)
+
+
+--------------------------------------------------------------------------------
+ 작성: 2026-05-03 / 마지막 수정: 2026-05-07 (simple_room 추가)
 --------------------------------------------------------------------------------
