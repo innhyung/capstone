@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="L_AND_F">
+
+  <xacro:include filename="$(find ur3_4040_urdf)/urdf/mobile_base.xacro" />
+
+
+  <xacro:include filename="$(find ur3_4040_urdf)/urdf/ur3_arm.xacro" />
+
+  <xacro:arg name="use_sim" default="true"/>
+
+    <xacro:if value="$(arg use_sim)">
+        <xacro:include filename="$(find ur3_4040_urdf)/urdf/mobile_base_gazebo.xacro" />
+    </xacro:if>
+
+  <xacro:mobile_base />
+
+ <xacro:ur3_robot prefix="arm_" parent="base_link" joint_limited="true"
+                 shoulder_lift_lower_limit="-1.57"
+                 shoulder_lift_upper_limit="-1.57"
+                 elbow_joint_lower_limit="1.57"
+                 elbow_joint_upper_limit="1.57">
+                 <!-- 걸리적거리지않게, 일단 로봇팔 묶어둠 -->
+    <origin xyz="0.2 0 0.35" rpy="0 0 0" />
+  </xacro:ur3_robot>
+</robot>    

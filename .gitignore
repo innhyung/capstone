@@ -1,0 +1,23 @@
+# colcon build outputs
+build/
+install/
+log/
+
+# Third-party (read_me.txt 1번 섹션 가이드대로 별도 clone)
+src/m-explore-ros2/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Backups / temp
+*.bak
+*~
+*.swp
+*.swo
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
