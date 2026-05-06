@@ -38,31 +38,56 @@
 
 
 --------------------------------------------------------------------------------
- 2. 튜토리얼
+ 2. 처음 세팅 (조원이 새 PC 에서 GitHub 으로 받아와 시작할 때)
 --------------------------------------------------------------------------------
 
-  워크스페이스 루트(예: ~/ur3) 에서 아래 순서대로 실행:
+  GitHub repo: https://github.com/innhyung/capstone
 
-  # (1) ROS 2 환경 source — 새 터미널 열 때마다 필요
+  아래 0~8 단계를 순서대로. 0번은 그 PC 에서 평생 한 번이면 됨.
+
+
+  ── (0) 사전 요구사항 (OS / 시스템 패키지) ────────────────────────────────────
+
+  Ubuntu 24.04 (noble) 에서 검증됨. ROS / Gazebo 가 이미 깔려있다면 스킵.
+
+  # ROS 2 Jazzy
+  #   공식 문서: https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html
+  sudo apt install ros-jazzy-desktop
+
+  # Gazebo Harmonic 연동
+  sudo apt install ros-jazzy-ros-gz
+
+  # 기타 도구
+  sudo apt install python3-pip git python3-colcon-common-extensions python3-rosdep
+
+
+  ── (1) 워크스페이스 clone ───────────────────────────────────────────────────
+
+  git clone https://github.com/innhyung/capstone.git ~/ur3
+  cd ~/ur3
+
+
+  ── (2) third-party 패키지 (m-explore-ros2) 별도 clone ───────────────────────
+
+  m-explore-ros2 는 라이선스/사이즈 이유로 .gitignore 에 들어있어서 별도 clone:
+
+  git clone https://github.com/robo-friends/m-explore-ros2.git src/m-explore-ros2
+
+
+  ── (3) ROS 2 환경 source + rosdep DB 초기화 ─────────────────────────────────
+
   source /opt/ros/jazzy/setup.bash
-
-  # (2) rosdep DB 초기화 — 이 PC 에서 처음 한 번만
-  sudo rosdep init        # "already initialized" 떠도 OK, 무시하면 됨
+  sudo rosdep init      # "already initialized" 떠도 OK, 무시하면 됨
   rosdep update
 
-  # (3) package.xml 의 모든 exec_depend 자동 설치
-  #     (위 1번 섹션의 ros-jazzy-* 패키지들이 이 한 줄로 다 깔림)
+
+  ── (4) ROS 의존성 자동 설치 ─────────────────────────────────────────────────
+
+  package.xml 의 모든 exec_depend (slam_toolbox, nav2_bringup, ros_gz_bridge,
+  robot_state_publisher 등) 가 이 한 줄로 다 깔림:
+
   cd ~/ur3
   rosdep install --from-paths src --ignore-src -r -y
-
-  # (4) Python 라이브러리 설치 (clean_map.py 용)
-  pip install opencv-python
-
-  # (5) 워크스페이스 빌드
-  colcon build --symlink-install
-
-  # (6) 빌드 결과 source — 새 터미널 열 때마다 필요
-  source ~/ur3/install/setup.bash
 
   rosdep 옵션 의미:
     --from-paths src  : src/ 아래 모든 package.xml 스캔
@@ -71,13 +96,59 @@
     -r                : 일부 의존성 해결 실패해도 멈추지 말고 계속
     -y                : apt prompt 자동 yes
 
-  주의:
-    - explore_lite 는 third-party 라 rosdep DB 에 없음. rosdep 이
-      "explore_lite: not found" 경고 띄울 수 있는데 --ignore-src 로 무시되니 정상.
-      src/m-explore-ros2/ 가 이미 있어야 함 (없으면 1번 섹션 가이드대로 clone).
-    - 매 새 터미널마다 (1)+(6) 두 줄 source 가 필요함. 자주 열면 ~/.bashrc 에:
-        echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
-        echo "source ~/ur3/install/setup.bash" >> ~/.bashrc
+  참고: explore_lite 는 rosdep DB 에 없어 "explore_lite: not found" 경고가 떠도
+        --ignore-src 로 무시되니 정상.
+
+
+  ── (5) Python 라이브러리 (clean_map.py 용) ──────────────────────────────────
+
+  pip install opencv-python
+
+
+  ── (6) 워크스페이스 빌드 ────────────────────────────────────────────────────
+
+  cd ~/ur3
+  colcon build --symlink-install
+
+  처음 빌드는 5~15분 정도. UR3 / m-explore-ros2 등이 같이 컴파일됨.
+
+
+  ── (7) 환경 source + ROS_DOMAIN_ID ──────────────────────────────────────────
+
+  매 새 터미널마다 아래 세 줄이 필요:
+
+  source /opt/ros/jazzy/setup.bash
+  source ~/ur3/install/setup.bash
+  export ROS_DOMAIN_ID=28
+
+  자주 새 터미널 여는데 매번 치기 귀찮으면 ~/.bashrc 끝에 한 번 박아두면 자동:
+
+  echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
+  echo "source ~/ur3/install/setup.bash" >> ~/.bashrc
+  echo "export ROS_DOMAIN_ID=28"          >> ~/.bashrc
+
+
+  ── (8) 동작 확인 ────────────────────────────────────────────────────────────
+
+  ros2 launch ur3_4040_urdf map_building.launch.py
+
+  - Gazebo + RViz + SLAM + Nav2 + explore 가 다 떠야 정상.
+  - 14초 자동 회전 후 robot 이 자율 매핑 시작.
+  - 종료는 launch 터미널에서 Ctrl+C.
+
+
+  ── 자주 막히는 지점 ─────────────────────────────────────────────────────────
+
+    rosdep update 가 멈춤
+        → 인터넷 + GitHub 도달 가능한지 확인.
+    colcon build 에서 explore_lite 못 찾음
+        → (2) 단계 m-explore-ros2 clone 누락. clone 후 다시 colcon build.
+    ros2 launch 가 패키지 못 찾음
+        → (7) 단계 source ~/ur3/install/setup.bash 안 한 새 터미널.
+    Gazebo 안 뜨거나 모델 로드 실패
+        → ros-jazzy-ros-gz 미설치 ((0) 단계 누락).
+    controller "collision ahead!" 반복
+        → nav2_params.yaml 의 obstacle_min_range 확인. 6번 섹션 FAQ 참고.
 
 
 --------------------------------------------------------------------------------
