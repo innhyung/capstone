@@ -63,31 +63,68 @@ source install/setup.bash
 
 ## 5. 실행
 
-### 5-1. 센서 (라즈베리파이)
+모든 터미널에서 먼저 `source ~/capstone/install/setup.bash`, PC·라즈베리파이 `ROS_DOMAIN_ID` 동일이 전제다.
+실기 운용에서 외울 명령은 아래 launch 4개 + 맵 저장 1개뿐이다.
+
+| 단계 | 라즈베리파이 | PC |
+|---|---|---|
+| 매핑 | `sensors.launch.py` | `mapping.launch.py` + 텔레옵 + `map_saver_cli` |
+| 내비게이션 | `sensors.launch.py` | `navigation.launch.py` |
+
+### 5-1. 센서 (라즈베리파이) — 매핑·내비게이션 공통 1단계
 
 ```bash
 ros2 launch robot_bringup sensors.launch.py                # 라이다 + IMU
 ros2 launch robot_bringup sensors.launch.py lidar:=false   # IMU만 (라이다 없을 때)
 ```
-발행 토픽: `/scan`, `/imu/data`, `/imu/mag`
+
+**무슨 일이 일어나나:** YDLidar(라이프사이클 노드 — 자동으로 configure→activate)와
+BNO055 IMU 드라이버가 뜬다. 결과로 `/scan`, `/imu/data`, `/imu/mag` 토픽이 DDS로
+발행되어 PC가 받아 쓴다. (`imu:=false` 로 IMU만 제외 가능)
 
 ### 5-2. 매핑 (PC)
 
 ```bash
 ros2 launch robot_bringup mapping.launch.py
-# 별도 터미널 — 텔레옵으로 로봇을 운전하며 공간을 한 바퀴
+ros2 launch robot_bringup mapping.launch.py port:=/dev/ttyUSB1   # ESP32 포트가 바뀐 경우
+# 별도 터미널 — 텔레옵으로 로봇을 천천히 운전하며 공간을 한 바퀴
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 # 맵 저장
 ros2 run nav2_map_server map_saver_cli -f ~/capstone/src/robot_bringup/maps/my_real_map
 ```
 
+**`mapping.launch.py` 가 PC에서 띄우는 것:**
+
+| 노드 | 하는 일 |
+|---|---|
+| `robot_state_publisher` | URDF로 TF 트리 발행 (`base_footprint`→`base_link`→`lidar_link`/`imu_link` …) |
+| `serial_bridge` | ESP32와 시리얼 통신. `/cmd_vel`을 받아 모터로 보내고, 엔코더로 `/odom` + `odom`→`base_footprint` TF 발행 |
+| `slam_toolbox` | `/scan` + `/odom`을 합쳐 지도를 그리고 `map`→`odom` TF 발행 (`slam_real.yaml` 사용) |
+| `rviz2` | 지도가 그려지는 과정을 실시간 확인 |
+
+**텔레옵**은 키보드 입력을 `/cmd_vel`로 발행 → `serial_bridge`가 ESP32로 전달 → 로봇이 움직인다.
+방을 한 바퀴 돌면 RViz에서 지도가 채워지고, **맵 저장** 명령이 현재 지도를
+`my_real_map.pgm`(이미지) + `my_real_map.yaml`(메타)로 떨어뜨린다 — 다음 단계의 입력 맵.
+
 ### 5-3. 내비게이션 (PC)
 
 ```bash
 ros2 launch robot_bringup navigation.launch.py
-ros2 launch robot_bringup navigation.launch.py map:=/경로/다른맵.yaml
+ros2 launch robot_bringup navigation.launch.py map:=/경로/다른맵.yaml   # 다른 맵 사용
+ros2 launch robot_bringup navigation.launch.py port:=/dev/ttyUSB1      # ESP32 포트가 바뀐 경우
 ```
-RViz에서 "2D Pose Estimate"로 초기 위치를 잡고 "Nav2 Goal"로 목표를 지정한다.
+
+**`navigation.launch.py` 가 PC에서 띄우는 것** (SLAM 대신 "저장된 맵 + AMCL 위치추정"이 들어간 게 매핑과의 차이):
+
+| 시점 | 노드 | 하는 일 |
+|---|---|---|
+| 즉시 | `robot_state_publisher` + `serial_bridge` | 매핑 때와 동일 (TF, 모터, `/odom`) |
+| +3초 | Nav2 **Localization** | `map_server`가 저장된 맵을 불러오고 `AMCL`이 라이다로 위치 추정 (`map`→`odom` TF) |
+| +10초 | Nav2 **Navigation** | `planner`(경로 계획) / `controller`(주행 제어) / `behavior` / `bt_navigator` (`nav2_params.yaml` 사용) |
+| 즉시 | `rviz2` | 목표 지정 및 경로 확인 |
+
+띄운 뒤 RViz에서: **"2D Pose Estimate"** 로 지도 위 로봇의 실제 위치·방향을 클릭·드래그해
+AMCL을 초기화하고 → **"Nav2 Goal"** 로 목표 지점을 찍으면 로봇이 스스로 경로를 짜 자율주행한다.
 
 ## 6. TF 트리
 
@@ -118,6 +155,8 @@ colcon build --symlink-install
 `build/`, `install/`, `log/` 는 git 추적에서 제외된다(`.gitignore`) — 머신마다 따로 빌드.
 
 ## 8. 현재 상태 & 로드맵
+
+> 상세 진행 현황·결정 배경·주말 작업 체크리스트: **[docs/STATUS.md](docs/STATUS.md)**
 
 **완료**
 - 워크스페이스 통합, PC·라즈베리파이 양쪽 빌드
