@@ -1,0 +1,174 @@
+import math
+import threading
+import serial
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import TransformStamped
+from tf2_ros import TransformBroadcaster
+
+
+class SerialBridge(Node):
+    def __init__(self):
+        super().__init__('serial_bridge')
+
+        self.declare_parameter('port', '/dev/ttyUSB0')
+        self.declare_parameter('baud', 115200)
+        self.declare_parameter('wheel_radius', 0.0625)
+        self.declare_parameter('wheelbase', 0.542)
+        self.declare_parameter('ticks_per_rev', 1200.0)
+        self.declare_parameter('odom_frame', 'odom')
+        # base_frame: URDF 루트가 base_footprint 이므로 odom 을 여기에 연결한다.
+        # (base_link 에 붙이면 robot_state_publisher 의 base_footprint->base_link 와
+        #  부모가 충돌해 TF 트리가 깨진다.)
+        self.declare_parameter('base_frame', 'base_footprint')
+
+        port = self.get_parameter('port').value
+        baud = self.get_parameter('baud').value
+        self._r = self.get_parameter('wheel_radius').value
+        self._L = self.get_parameter('wheelbase').value
+        tpr = self.get_parameter('ticks_per_rev').value
+        self._odom_frame = self.get_parameter('odom_frame').value
+        self._base_frame = self.get_parameter('base_frame').value
+        self._mpt = (2.0 * math.pi * self._r) / tpr
+
+        try:
+            self._ser = serial.Serial(port, baud, timeout=1.0)
+            self.get_logger().info(f'Serial connected: {port} @ {baud}')
+        except serial.SerialException as exc:
+            self.get_logger().fatal(f'Cannot open serial port: {exc}')
+            raise SystemExit(1)
+
+        self._x = 0.0
+        self._y = 0.0
+        self._yaw = 0.0
+        self._encL = None
+        self._encR = None
+        self._lock = threading.Lock()
+        self._buffer = ''
+
+        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        self._odom_pub = self.create_publisher(Odometry, '/odom', 10)
+        self._tf_bc = TransformBroadcaster(self)
+        self.create_subscription(Twist, '/cmd_vel', self._on_cmd_vel, qos)
+
+        self._running = True
+        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread.start()
+
+    def _on_cmd_vel(self, msg: Twist):
+        v = msg.linear.x
+        w = msg.angular.z
+        line = f'CMD_VEL:{int(v * 1000)},{int(w * 1000)}\n'
+        try:
+            self._ser.write(line.encode('ascii'))
+        except serial.SerialException as exc:
+            self.get_logger().warn(f'Serial write error: {exc}')
+
+    def _read_loop(self):
+        while self._running and rclpy.ok():
+            try:
+                raw = self._ser.readline()
+                if not raw:
+                    continue
+                line = raw.decode('ascii', errors='ignore').strip()
+                if line.startswith('FB:'):
+                    self._handle_fb(line[3:])
+            except serial.SerialException as exc:
+                self.get_logger().error(f'Serial read error: {exc}')
+                break
+
+    def _handle_fb(self, payload: str):
+        parts = payload.split(',')
+        if len(parts) != 4:
+            return
+        try:
+            enc_l = int(parts[0])
+            enc_r = int(parts[1])
+            vel_l = int(parts[2]) / 1000.0
+            vel_r = int(parts[3]) / 1000.0
+        except ValueError:
+            return
+
+        now = self.get_clock().now()
+
+        with self._lock:
+            if self._encL is not None and self._encR is not None:
+                dl = (enc_l - self._encL) * self._mpt
+                dr = (enc_r - self._encR) * self._mpt
+                d = (dl + dr) / 2.0
+                dth = (dr - dl) / self._L
+                self._x += d * math.cos(self._yaw + dth / 2.0)
+                self._y += d * math.sin(self._yaw + dth / 2.0)
+                self._yaw += dth
+                self._yaw = math.atan2(math.sin(self._yaw), math.cos(self._yaw))
+
+            self._encL = enc_l
+            self._encR = enc_r
+            x, y, yaw = self._x, self._y, self._yaw
+
+        # FB의 vel_l/vel_r은 좌·우 바퀴 각속도(rad/s)다.
+        # /odom의 twist는 로봇 몸체 속도여야 하므로 변환한다.
+        v_left = vel_l * self._r          # 왼쪽 바퀴 선속도 (m/s)
+        v_right = vel_r * self._r         # 오른쪽 바퀴 선속도 (m/s)
+        v_body = (v_left + v_right) / 2.0          # 직진 속도 (m/s)
+        w_body = (v_right - v_left) / self._L      # 회전 속도 (rad/s)
+
+        self._publish_odom(now, x, y, yaw, v_body, w_body)
+        self._publish_tf(now, x, y, yaw)
+
+    def _publish_odom(self, stamp, x, y, yaw, v, w):
+        qz = math.sin(yaw / 2.0)
+        qw = math.cos(yaw / 2.0)
+
+        msg = Odometry()
+        msg.header.stamp = stamp.to_msg()
+        msg.header.frame_id = self._odom_frame
+        msg.child_frame_id = self._base_frame
+        msg.pose.pose.position.x = x
+        msg.pose.pose.position.y = y
+        msg.pose.pose.orientation.z = qz
+        msg.pose.pose.orientation.w = qw
+        msg.twist.twist.linear.x = v
+        msg.twist.twist.angular.z = w
+        msg.pose.covariance[0] = 0.01
+        msg.pose.covariance[7] = 0.01
+        msg.pose.covariance[35] = 0.05
+        msg.twist.covariance[0] = 0.01
+        msg.twist.covariance[35] = 0.05
+        self._odom_pub.publish(msg)
+
+    def _publish_tf(self, stamp, x, y, yaw):
+        tf = TransformStamped()
+        tf.header.stamp = stamp.to_msg()
+        tf.header.frame_id = self._odom_frame
+        tf.child_frame_id = self._base_frame
+        tf.transform.translation.x = x
+        tf.transform.translation.y = y
+        tf.transform.rotation.z = math.sin(yaw / 2.0)
+        tf.transform.rotation.w = math.cos(yaw / 2.0)
+        self._tf_bc.sendTransform(tf)
+
+    def destroy_node(self):
+        self._running = False
+        self._ser.close()
+        super().destroy_node()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = SerialBridge()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

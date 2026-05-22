@@ -1,0 +1,150 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <material name="black"><color rgba="0.05 0.05 0.05 1" /></material>
+  <material name="light_grey"><color rgba="0.89 0.89 0.89 1" /></material>
+  <material name="metal_grey"><color rgba="0.75 0.76 0.75 1" /></material>
+
+  <xacro:macro name="ball_caster" params="prefix xyz">
+    <link name="${prefix}_caster_link">
+      <visual><geometry><sphere radius="0.02"/></geometry><material name="black"/></visual>
+      <collision><geometry><sphere radius="0.02"/></geometry></collision>
+      <inertial><mass value="1.0"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+    </link>
+    <joint name="${prefix}_caster_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="${prefix}_caster_link"/>
+      <origin xyz="${xyz}" rpy="0 0 0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="mobile_base">
+
+    <link name="base_footprint"/>
+
+    <joint name="base_footprint_joint" type="fixed">
+      <parent link="base_footprint"/>
+      <child link="base_link"/>
+      <origin xyz="0 0 0.141" rpy="0 0 0"/>
+    </joint>
+
+    <link name="base_link">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <mass value="35.0" />
+        <inertia ixx="1.5" ixy="0" ixz="0" iyy="1.5" iyz="0" izz="2.5" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry><mesh filename="file://$(find ur3_4040_urdf)/meshes/base_link.STL" /></geometry>
+        <material name="light_grey"/>
+      </visual>
+      <!-- <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry><mesh filename="file://$(find ur3_4040_urdf)/meshes/base_link.STL" /></geometry>
+      </collision> -->
+    </link>
+
+    <link name="base">
+      <inertial>
+        <origin xyz="0 0 0.1" rpy="0 0 0" />
+        <mass value="13.0" />
+        <inertia ixx="0.1" ixy="0" ixz="0" iyy="0.2" iyz="0" izz="0.1" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry><mesh filename="file://$(find ur3_4040_urdf)/meshes/base.STL" /></geometry>
+        <material name="metal_grey"/>
+      </visual>
+      <!-- <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry><mesh filename="file://$(find ur3_4040_urdf)/meshes/base.STL" /></geometry>
+      </collision> -->
+    </link>
+
+    <joint name="base_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <parent link="base_link" />
+      <child link="base" />
+    </joint>
+
+    <link name="Lwheel">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <mass value="1.0" />
+        <inertia ixx="0.002" ixy="0" ixz="0" iyy="0.002" iyz="0" izz="0.001" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry><mesh filename="file://$(find ur3_4040_urdf)/meshes/Lwheel.STL" /></geometry>
+        <material name="black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry><cylinder radius="0.0631" length="0.04"/></geometry>
+        <!-- <geometry><mesh filename="file://$(find ur3_4040_urdf)/meshes/Lwheel.STL" /></geometry> -->
+      </collision>
+    </link>
+
+    <joint name="Lwheel_joint" type="continuous">
+      <origin xyz="0 0.271 -0.078" rpy="-1.5708 0 0" />
+      <parent link="base_link" />
+      <child link="Lwheel" />
+      <axis xyz="0 0 1" />
+      <dynamics damping="1.0" friction="0.1"/>
+    </joint>
+
+    <link name="Rwheel">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <mass value="1.0" />
+        <inertia ixx="0.002" ixy="0" ixz="0" iyy="0.002" iyz="0" izz="0.001" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry><mesh filename="file://$(find ur3_4040_urdf)/meshes/Rwheel.STL" /></geometry>
+        <material name="black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry><cylinder radius="0.0631" length="0.04"/></geometry>
+        <!-- <geometry><mesh filename="file://$(find ur3_4040_urdf)/meshes/Rwheel.STL" /></geometry> -->
+      </collision>
+    </link>
+
+    <joint name="Rwheel_joint" type="continuous">
+      <origin xyz="0 -0.271 -0.078" rpy="-1.5708 0 0" />
+      <parent link="base_link" />
+      <child link="Rwheel" />
+      <axis xyz="0 0 1" />
+      <dynamics damping="1.0" friction="0.1"/>
+    </joint>
+
+    <link name="lidar_link">
+      <visual><geometry><cylinder radius="0.03" length="0.04"/></geometry><material name="black"/></visual>
+      <inertial><mass value="0.1"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+    </link>
+
+    <joint name="lidar_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="lidar_link"/>
+      <origin xyz="0.3 0 0.15" rpy="0 0 0"/> 
+    </joint>
+    
+    <link name="imu_link">
+      <visual><geometry><box size="0.02 0.02 0.01"/></geometry><material name="black"/></visual>
+    </link>
+
+    <joint name="imu_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="imu_link"/>
+      <origin xyz="0 0 0.1" rpy="0 0 0"/> 
+    </joint>
+
+   <xacro:ball_caster prefix="f_l" xyz="0.285 0.242 -0.121" />
+    <xacro:ball_caster prefix="f_r" xyz="0.285 -0.238 -0.121" />
+    <xacro:ball_caster prefix="b_l" xyz="-0.285 0.242 -0.121" />
+    <xacro:ball_caster prefix="b_r" xyz="-0.285 -0.238 -0.121" />
+  </xacro:macro>
+
+</robot>

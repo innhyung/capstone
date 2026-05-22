@@ -1,0 +1,11 @@
+# colcon 빌드 산출물 (머신마다 따로 빌드)
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+
+# 에디터
+*.swp
