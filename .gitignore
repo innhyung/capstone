@@ -9,3 +9,16 @@ __pycache__/
 
 # 에디터
 *.swp
+
+# PlatformIO 빌드 산출물 (firmware/*/)
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# TF 디버그 산출물 (transient)
+frames_*.gv
+frames_*.pdf
+
+# 맵 로컬 백업 (커밋 안 함)
+*_backup_*.pgm
+*_backup_*.yaml

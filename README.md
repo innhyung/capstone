@@ -28,7 +28,7 @@
 | 구성 | 내용 |
 |---|---|
 | 로봇 | 차동구동 이동베이스 + UR3 팔 ("L_AND_F") |
-| 모터 제어 | ESP32 (PID 펌웨어) — 펌웨어는 `~/ros2_pid_control`에 별도 보관 |
+| 모터 제어 | ESP32 (PID 펌웨어) — 소스는 `firmware/esp32_pid/` (PlatformIO) |
 | 라이다 | YDLidar X4 Pro (내부 펌웨어는 S2 Pro로 표기) — 라즈베리파이 USB |
 | IMU | BNO055 (I2C, 주소 0x29) — 라즈베리파이 I2C 버스 1 |
 | 센서 컴퓨터 | Raspberry Pi (ROS 2 Jazzy) |
@@ -36,15 +36,20 @@
 ## 3. 패키지 구조
 
 ```
-capstone/src/
-├── robot_bringup/        런치파일 + SLAM설정 + 맵 (워크스페이스 진입점)
-│   ├── launch/  mapping.launch.py · navigation.launch.py · sensors.launch.py
-│   ├── config/  slam_real.yaml
-│   └── maps/    my_real_map.{pgm,yaml}
-├── ros2_pid_bridge/      ESP32 ↔ ROS 2 브리지 (/cmd_vel→모터, 엔코더→/odom+TF)   [PC]
-├── ur3_4040_urdf/        로봇 URDF/xacro + nav2_params.yaml + ekf.yaml           [PC]
-├── bno055_driver/        BNO055 IMU 드라이버 (Python / adafruit_bno055)          [RPi]
-└── ydlidar_ros2_driver/  YDLidar 드라이버                                        [RPi]
+capstone/
+├── src/                              ROS 2 패키지
+│   ├── robot_bringup/        런치파일 + SLAM설정 + 맵 (워크스페이스 진입점)
+│   │   ├── launch/  mapping.launch.py · navigation.launch.py · sensors.launch.py
+│   │   ├── config/  slam_real.yaml
+│   │   └── maps/    my_real_map.{pgm,yaml}
+│   ├── ros2_pid_bridge/      ESP32 ↔ ROS 2 브리지 (/cmd_vel→모터, 엔코더→/odom+TF) [PC]
+│   ├── ur3_4040_urdf/        로봇 URDF/xacro + nav2_params.yaml + ekf.yaml         [PC]
+│   ├── bno055_driver/        BNO055 IMU 드라이버 (Python / adafruit_bno055)        [RPi]
+│   └── ydlidar_ros2_driver/  YDLidar 드라이버                                      [RPi]
+└── firmware/
+    └── esp32_pid/                    ESP32 모터 PID 펌웨어 (PlatformIO)            [PC 업로드]
+        ├── platformio.ini
+        └── src/main.cpp
 ```
 
 워크스페이스는 PC·라즈베리파이 양쪽에 동일하게 존재하며, 각 머신은 자기가 쓸 패키지만 실행한다.
@@ -87,11 +92,16 @@ BNO055 IMU 드라이버가 뜬다. 결과로 `/scan`, `/imu/data`, `/imu/mag` �
 ```bash
 ros2 launch robot_bringup mapping.launch.py
 ros2 launch robot_bringup mapping.launch.py port:=/dev/ttyUSB1   # ESP32 포트가 바뀐 경우
+ros2 launch robot_bringup mapping.launch.py skip_upload:=false   # 펌웨어를 새로 올리고 싶을 때만
 # 별도 터미널 — 텔레옵으로 로봇을 천천히 운전하며 공간을 한 바퀴
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 # 맵 저장
 ros2 run nav2_map_server map_saver_cli -f ~/capstone/src/robot_bringup/maps/my_real_map
 ```
+
+> ⚠️ 기본적으로 **launch 는 ESP32 펌웨어를 다시 올리지 않는다** (`skip_upload:=true`).
+> 업로드 중에는 ESP32 부트로더 단계에서 GPIO 가 떠 모터가 의도치 않게 구동될 수 있어서다.
+> 펌웨어를 바꾼 직후에만 `skip_upload:=false` 로 켜거나, 더 안전하게 §9 의 수동 `pio run -t upload` 절차를 따른다.
 
 **`mapping.launch.py` 가 PC에서 띄우는 것:**
 
@@ -173,7 +183,11 @@ colcon build --symlink-install
 
 ## 9. 주의사항
 
-- **ESP32 펌웨어는 이 워크스페이스에 없다** — `~/ros2_pid_control` (PlatformIO 프로젝트)
+- **ESP32 펌웨어**는 `firmware/esp32_pid/` (PlatformIO). 빌드·업로드·시리얼 프로토콜은 해당 폴더 README 참고
+  ```bash
+  source /home/min/.platformio/penv/bin/activate
+  cd ~/capstone/firmware/esp32_pid && pio run -t upload
+  ```
 - `WHEEL_BASE = 0.542 m` 는 URDF 기준값 — 실측 후 펌웨어/런치파일 보정 필요
 - ESP32 시리얼 포트(`/dev/ttyUSB*`)는 USB 재연결 시 번호가 바뀔 수 있다 → 런치 인자 `port:=` 로 지정
 - PC ↔ 라즈베리파이 `ROS_DOMAIN_ID` 는 반드시 동일해야 토픽이 보인다

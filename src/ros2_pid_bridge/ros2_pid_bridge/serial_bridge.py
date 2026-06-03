@@ -8,6 +8,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped
+from std_msgs.msg import Float32MultiArray
 from tf2_ros import TransformBroadcaster
 
 
@@ -25,6 +26,9 @@ class SerialBridge(Node):
         # (base_link 에 붙이면 robot_state_publisher 의 base_footprint->base_link 와
         #  부모가 충돌해 TF 트리가 깨진다.)
         self.declare_parameter('base_frame', 'base_footprint')
+        # EKF 도입 시 EKF 가 odom→base_footprint TF 를 대신 발행하므로
+        # serial_bridge 는 토픽만 발행하도록 끄기.
+        self.declare_parameter('publish_tf', True)
 
         port = self.get_parameter('port').value
         baud = self.get_parameter('baud').value
@@ -33,6 +37,7 @@ class SerialBridge(Node):
         tpr = self.get_parameter('ticks_per_rev').value
         self._odom_frame = self.get_parameter('odom_frame').value
         self._base_frame = self.get_parameter('base_frame').value
+        self._publish_tf_flag = self.get_parameter('publish_tf').value
         self._mpt = (2.0 * math.pi * self._r) / tpr
 
         try:
@@ -52,8 +57,13 @@ class SerialBridge(Node):
 
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         self._odom_pub = self.create_publisher(Odometry, '/odom', 10)
-        self._tf_bc = TransformBroadcaster(self)
+        self._tf_bc = TransformBroadcaster(self) if self._publish_tf_flag else None
+        if not self._publish_tf_flag:
+            self.get_logger().info('publish_tf=false — TF 발행 비활성 (EKF 위임)')
         self.create_subscription(Twist, '/cmd_vel', self._on_cmd_vel, qos)
+        # PID 게인 런타임 튜닝: [Kp, Ki, Kd] 또는 [Kp, Ki, Kd, integral_limit]
+        #   ros2 topic pub --once /pid_gain std_msgs/Float32MultiArray "data: [50.0, 8.0, 0.5]"
+        self.create_subscription(Float32MultiArray, '/pid_gain', self._on_pid_gain, 10)
 
         self._running = True
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
@@ -68,6 +78,23 @@ class SerialBridge(Node):
         except serial.SerialException as exc:
             self.get_logger().warn(f'Serial write error: {exc}')
 
+    def _on_pid_gain(self, msg: Float32MultiArray):
+        data = list(msg.data)
+        if len(data) == 3:
+            line = f'GAIN:{data[0]:.4f},{data[1]:.4f},{data[2]:.4f}\n'
+        elif len(data) == 4:
+            line = f'GAIN:{data[0]:.4f},{data[1]:.4f},{data[2]:.4f},{data[3]:.4f}\n'
+        else:
+            self.get_logger().warn(
+                f'/pid_gain expects 3 ([Kp,Ki,Kd]) or 4 ([Kp,Ki,Kd,ilim]) values, got {len(data)}'
+            )
+            return
+        try:
+            self._ser.write(line.encode('ascii'))
+            self.get_logger().info(f'PID gain sent: {line.strip()}')
+        except serial.SerialException as exc:
+            self.get_logger().warn(f'Serial write error: {exc}')
+
     def _read_loop(self):
         while self._running and rclpy.ok():
             try:
@@ -77,6 +104,8 @@ class SerialBridge(Node):
                 line = raw.decode('ascii', errors='ignore').strip()
                 if line.startswith('FB:'):
                     self._handle_fb(line[3:])
+                elif line.startswith('GAIN_SET:'):
+                    self.get_logger().info(f'ESP32 PID gains now: {line[9:]}')
             except serial.SerialException as exc:
                 self.get_logger().error(f'Serial read error: {exc}')
                 break
@@ -118,7 +147,8 @@ class SerialBridge(Node):
         w_body = (v_right - v_left) / self._L      # 회전 속도 (rad/s)
 
         self._publish_odom(now, x, y, yaw, v_body, w_body)
-        self._publish_tf(now, x, y, yaw)
+        if self._tf_bc is not None:
+            self._publish_tf(now, x, y, yaw)
 
     def _publish_odom(self, stamp, x, y, yaw, v, w):
         qz = math.sin(yaw / 2.0)

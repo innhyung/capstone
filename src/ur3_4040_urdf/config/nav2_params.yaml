@@ -165,7 +165,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.25
+        inflation_radius: 0.45
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -222,7 +222,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.25
+        inflation_radius: 0.45
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.
@@ -356,8 +356,8 @@ collision_monitor:
       time_before_collision: 0.4
       simulation_time_step: 0.1
       min_points: 6
-      visualize: False
-      enabled: False
+      visualize: True
+      enabled: True
     observation_sources: ["scan"]
     scan:
       type: "scan"
