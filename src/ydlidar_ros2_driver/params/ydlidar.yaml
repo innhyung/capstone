@@ -31,12 +31,12 @@ ydlidar_ros2_driver_node:
     port: /dev/ttyUSB0
     frame_id: lidar_link
     ignore_array: ""
-    baudrate: 128000
+    baudrate: 128000          # 이 S2-Pro 유닛(펌웨어3.1)은 128000/5K 모드 (펌웨어 자가보고)
     lidar_type: 1
     device_type: 0
     sample_rate: 5
     abnormal_check_count: 4
-    fixed_resolution: true
+    fixed_resolution: false   # ★핵심: 점개수 440 강제 끔 → 실제 442개 각도 그대로 (스캔 왜곡/맵 뭉개짐 방지)
     reversion: true
     inverted: true
     auto_reconnect: true

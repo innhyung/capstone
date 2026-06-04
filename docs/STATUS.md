@@ -2,7 +2,7 @@
 
 > 이 문서는 프로젝트의 전체 맥락·결정사항·현황·다음 할 일을 한곳에 모은 것이다.
 > 빌드·실행 명령(사용법)은 워크스페이스 루트의 [README.md](../README.md) 참고.
-> 최종 갱신: 2026-06-02 (오후)
+> 최종 갱신: 2026-06-04
 
 ---
 
@@ -26,7 +26,7 @@ SLAM 매핑 + Nav2 자율주행을 구현하는 캡스톤 프로젝트.
 |---|---|
 | 로봇 (이동베이스 + UR3 팔) | ✅ 있음 (학교 보관) |
 | ESP32 모터컨트롤러 | ✅ 있음, 모터 구동 가능 |
-| 라이다 YDLidar X4 Pro (펌웨어는 S2 Pro로 표기) | ✅ 있음 |
+| 라이다 **YDLIDAR S2-Pro** (외관은 X4 Pro와 동일, 펌웨어 3.1 — 주문은 X4 Pro였으나 실물은 S2-Pro) | ✅ 있음 (`ydlidar.yaml` **fixed_resolution: false** 필수) |
 | IMU BNO055 | ✅ 있음, 작동 검증 완료 |
 | 라즈베리파이 | ✅ 있음, ROS 2 Jazzy |
 | **엔코더** | ✅ **복구 완료** (2026-05-27) |
@@ -51,6 +51,22 @@ SLAM 매핑 + Nav2 자율주행을 구현하는 캡스톤 프로젝트.
 - **`ekf.yaml` crash 수정** — 파라미터 배열의 정수/실수 혼용 버그 (`ekf_node` 정상 기동 확인)
 - **README.md 작성** — 워크스페이스 사용법 문서
 - ESP32 펌웨어: 런타임 PID 게인 조정(`GAIN:` 시리얼 명령) 추가, `platformio.ini` 빌드 오타 수정
+
+### 6월 3~4일 (실물 맵 뭉개짐 근본원인 추적 — 결국 라이다 드라이버)
+
+**증상:** 시뮬은 깨끗한데 실물 매핑 시 맵이 뭉개지고(이중벽), odom이 맵 밖으로 드리프트. 2~3m 닫힌 공간·저속에서도 발생.
+
+**원인을 하나씩 배제하며 추적:**
+1. **왼쪽 엔코더 B상(GPIO35) 배선 단선** 발견·복구 → ghost wall·우편향·떨림의 1차 원인. (`scripts/encoder_diag.py`: 모터는 도는데 카운트 0, RAW로 죽은 위상 특정)
+2. **TICKS_PER_REV 5700 → 11400** — 엔코더 복구로 풀 ×4 디코딩 회복, 실측 1m = odom 0.99m 검증.
+3. **PID 게인 70/12/0.8 → 30/6/0** — 회전 떨림 해결 (Kd=0이 핵심).
+4. **EKF on/off 비교** (mapping_run3 bag 오프라인 재생, `offline_slam.launch.py use_ekf:=true/false`) → **두 맵 완전 동일 = EKF/IMU/yaw 무죄.** (교수님 연구실 권고대로 원인 분리)
+5. 검증 모두 통과: odom 직진(1m=0.99)·회전(90°=91°), `/odom` delay 2ms, 라파-PC 시계 동기, base→lidar extrinsic(0.3≈0.325 정상), 중복 TF 없음.
+6. **★ 진짜 근본원인: 라이다가 S2-Pro인데 `ydlidar.yaml`의 `fixed_resolution: true`** — 점 개수를 440으로 강제하나 S2-Pro는 매 스캔 실제 ~441~444개 → angle_increment가 매 스캔 어긋나 scan-matching 실패 → 맵 뭉개짐. **`fixed_resolution: false`로 해결** (CheckSum/point-count 에러 0, `/scan` 11.5Hz 안정). 노트북에서 검증 후 라파에도 적용. 시뮬은 고정 개수라 이 문제 없었음 → "시뮬OK·실물NG"의 답.
+
+**부수 수정:** nav2 footprint 0.40×0.54 → **실측 0.65×0.60**(앞으로 박던 문제), inflation 0.45→0.25(좁은 공간), collision_monitor 토글, slam loop closure off + 탐색범위 조임(odom 신뢰).
+
+**추가 도구:** `scripts/encoder_diag.py`(엔코더 진단), `rotate_hold.py`(PID 튜닝), `auto_map.py`(자동 매핑), `odom_to_tf.py`(EKF off 비교), `offline_slam.launch.py`(rosbag 재생 오프라인 SLAM — 로봇 없이 파라미터 무한 튜닝, use_ekf 토글).
 
 ### 5월 28일 ~ 6월 2일 (실물 브링업)
 

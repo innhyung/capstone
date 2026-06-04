@@ -27,8 +27,9 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.actions import (DeclareLaunchArgument, ExecuteProcess,
+                            IncludeLaunchDescription)
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
@@ -51,12 +52,17 @@ def generate_launch_description():
     # use_sim_time 은 오프라인 재생이라 기본 true (bag 의 /clock 사용)
     use_sim_time = LaunchConfiguration('use_sim_time')
     rviz = LaunchConfiguration('rviz')
+    use_ekf = LaunchConfiguration('use_ekf')
 
     declare_use_sim_time = DeclareLaunchArgument(
         'use_sim_time', default_value='true',
         description='bag 재생 시간을 쓰려면 true (오프라인 기본). bag play 는 --clock 으로.')
     declare_rviz = DeclareLaunchArgument(
         'rviz', default_value='true', description='RViz 동시 실행 여부.')
+    declare_use_ekf = DeclareLaunchArgument(
+        'use_ekf', default_value='true',
+        description='true=EKF(wheel vx + IMU vyaw) 로 odom->base TF. '
+                    'false=wheel odom 만으로 odom->base TF (EKF on/off 비교용).')
 
     # ---- robot_state_publisher: URDF → base_footprint→...→lidar_link TF ----
     robot_description = ParameterValue(
@@ -79,13 +85,23 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time}],
     )
 
-    # ---- EKF: bag 의 /odom + /imu/data → odom→base_footprint TF ----
+    # ---- odom→base_footprint TF: EKF (use_ekf=true) 또는 wheel-only (false) ----
+    # use_ekf=true: bag 의 /odom(vx) + /imu/data(vyaw) 융합
     ekf_node = Node(
         package='robot_localization',
         executable='ekf_node',
         name='ekf_filter_node',
         output='screen',
         parameters=[ekf_params, {'use_sim_time': use_sim_time}],
+        condition=IfCondition(use_ekf),
+    )
+    # use_ekf=false: bag 의 wheel /odom pose 를 그대로 TF 로 (IMU 미사용, EKF off 비교)
+    odom_to_tf = ExecuteProcess(
+        name='odom_to_tf',
+        cmd=['python3', '/home/min/capstone/scripts/odom_to_tf.py',
+             '--ros-args', '-p', 'use_sim_time:=true'],
+        output='screen',
+        condition=UnlessCondition(use_ekf),
     )
 
     # ---- slam_toolbox: bag 의 /scan + TF → map ----
@@ -112,9 +128,11 @@ def generate_launch_description():
     return LaunchDescription([
         declare_use_sim_time,
         declare_rviz,
+        declare_use_ekf,
         robot_state_publisher,
         joint_state_publisher,
         ekf_node,
+        odom_to_tf,
         slam,
         rviz_node,
     ])

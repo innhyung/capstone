@@ -35,7 +35,7 @@ slam_toolbox:
     link_match_minimum_response_fine: 0.1
     link_scan_maximum_distance: 1.5
     loop_search_maximum_distance: 5.0   # 3.0→5.0: 더 멀리서도 loop closure 시도
-    do_loop_closing: true
+    do_loop_closing: false   # 2026-06-03: 작은 공간엔 불필요 + 느슨한 임계값(0.35)이 가짜 loop로 맵 비틈 → 끔
     loop_match_minimum_chain_size: 10
     loop_match_maximum_variance_coarse: 3.0
     loop_match_minimum_response_coarse: 0.35

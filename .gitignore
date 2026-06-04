@@ -22,3 +22,8 @@ frames_*.pdf
 # 맵 로컬 백업 (커밋 안 함)
 *_backup_*.pgm
 *_backup_*.yaml
+
+# rosbag 녹화 (용량 큼 — git 제외, 오프라인 SLAM 튜닝용 로컬 데이터)
+mapping_run*/
+*.mcap
+*.db3
