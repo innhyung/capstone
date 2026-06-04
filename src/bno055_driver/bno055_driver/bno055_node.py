@@ -12,10 +12,15 @@ class BNO055Node(Node):
         self.declare_parameter('i2c_address', 0x29)
         self.declare_parameter('frame_id', 'imu_link')
         self.declare_parameter('publish_rate_hz', 50.0)
+        # 자이로 yaw rate 스케일 보정. 2026-06-04 실물 3바퀴(1080°) 테스트에서
+        # 휠=1080.6°(정확) vs IMU=1019.6° → 자이로가 회전을 5.6% 적게 읽음.
+        # 1080/1019.6=1.059 를 angular_velocity 에 곱해 보정 (EKF heading 정확도 ↑).
+        self.declare_parameter('gyro_scale', 1.059)
 
         address = self.get_parameter('i2c_address').value
         self.frame_id = self.get_parameter('frame_id').value
         rate = self.get_parameter('publish_rate_hz').value
+        self.gyro_scale = float(self.get_parameter('gyro_scale').value)
 
         i2c = board.I2C()
         self.sensor = adafruit_bno055.BNO055_I2C(i2c, address=address)
@@ -54,9 +59,10 @@ class BNO055Node(Node):
                 imu_msg.orientation.z = float(quat[3])
 
             if gyro and None not in gyro:
-                imu_msg.angular_velocity.x = float(gyro[0])
-                imu_msg.angular_velocity.y = float(gyro[1])
-                imu_msg.angular_velocity.z = float(gyro[2])
+                # gyro_scale: 자이로 스케일 보정 (5.6% under-read → ×1.059). 위 선언부 참고.
+                imu_msg.angular_velocity.x = float(gyro[0]) * self.gyro_scale
+                imu_msg.angular_velocity.y = float(gyro[1]) * self.gyro_scale
+                imu_msg.angular_velocity.z = float(gyro[2]) * self.gyro_scale
 
             if accel and None not in accel:
                 imu_msg.linear_acceleration.x = float(accel[0])

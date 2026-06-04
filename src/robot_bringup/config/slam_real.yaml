@@ -35,11 +35,11 @@ slam_toolbox:
     link_match_minimum_response_fine: 0.1
     link_scan_maximum_distance: 1.5
     loop_search_maximum_distance: 5.0   # 3.0→5.0: 더 멀리서도 loop closure 시도
-    do_loop_closing: false   # 2026-06-03: 작은 공간엔 불필요 + 느슨한 임계값(0.35)이 가짜 loop로 맵 비틈 → 끔
+    do_loop_closing: true   # 2026-06-04: 넓은 맵 전환 → 회전 누적 보정 위해 다시 켬. 단 임계값은 엄격하게(아래) 해서 가짜 loop 방지.
     loop_match_minimum_chain_size: 10
     loop_match_maximum_variance_coarse: 3.0
-    loop_match_minimum_response_coarse: 0.35
-    loop_match_minimum_response_fine: 0.35   # 매우 느슨하게 — 작은 유사도에도 loop closure 시도
+    loop_match_minimum_response_coarse: 0.45   # 0.35→0.45: coarse 단계부터 확실한 후보만
+    loop_match_minimum_response_fine: 0.50   # 0.35→0.50: 강한 매칭일 때만 loop closure 확정 (가짜 loop로 맵 비트는 것 방지)
 
     correlation_search_space_dimension: 0.3  # 2026-06-03 odom 정확해짐 → 탐색범위 0.5→0.3 다시 조임 (odom 예측 근처만 미세조정, 멀리 헤매는 것 방지)
     correlation_search_space_resolution: 0.01
@@ -50,10 +50,10 @@ slam_toolbox:
     loop_search_space_smear_deviation: 0.03
 
     distance_variance_penalty: 0.3   # 0.5→0.3: odom 에서 벗어나면 더 강하게 페널티 (odom 신뢰 ↑)
-    angle_variance_penalty: 0.5      # 1.0→0.5: 회전도 odom 더 신뢰
+    angle_variance_penalty: 1.0      # 2026-06-04: 0.5→1.0 되돌림. odom/IMU heading 바이어스를 그대로 받아적지 않게, scan-matching이 벽 보고 heading 스스로 교정하도록 신뢰 완화 (라이다 fixed_resolution 고쳐서 scan-match 신뢰 가능)
 
     fine_search_angle_offset: 0.00349
-    coarse_search_angle_offset: 0.1   # 0.349(20°)→0.1(~6°): 가짜 큰 회전(맵 휨) 차단
+    coarse_search_angle_offset: 0.2   # 2026-06-04: 0.1(~6°)→0.2(~11°). heading 바이어스를 scan-matcher가 교정하려면 탐색 각도 여유가 필요. (라이다 고쳐서 가짜 회전 위험 ↓)
     coarse_angle_resolution: 0.0349
     minimum_angle_penalty: 0.9
     minimum_distance_penalty: 0.5
