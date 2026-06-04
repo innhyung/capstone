@@ -12,10 +12,12 @@ class BNO055Node(Node):
         self.declare_parameter('i2c_address', 0x29)
         self.declare_parameter('frame_id', 'imu_link')
         self.declare_parameter('publish_rate_hz', 50.0)
-        # 자이로 yaw rate 스케일 보정. 2026-06-04 실물 3바퀴(1080°) 테스트에서
-        # 휠=1080.6°(정확) vs IMU=1019.6° → 자이로가 회전을 5.6% 적게 읽음.
-        # 1080/1019.6=1.059 를 angular_velocity 에 곱해 보정 (EKF heading 정확도 ↑).
-        self.declare_parameter('gyro_scale', 1.059)
+        # 자이로 yaw rate 스케일 보정. 2026-06-04 실물 3바퀴 테스트.
+        # ⚠️ 1차로 IMU orientation(쿼터니언) 5.6% under 만 보고 1.059 적용 → 과보정이었음.
+        # EKF 가 실제 쓰는 건 orientation 이 아니라 rate(angular_velocity.z)인데,
+        # rate 는 원래 거의 정확(±1%)했음. scale 1.059 일 때 EKF heading 1156°(truth 1080°, +7%).
+        # → 1.059×1078.7/1156.4 = 0.988 로 내려 EKF heading 이 휠/실제와 일치하게 함.
+        self.declare_parameter('gyro_scale', 0.988)
 
         address = self.get_parameter('i2c_address').value
         self.frame_id = self.get_parameter('frame_id').value
