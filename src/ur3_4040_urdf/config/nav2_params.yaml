@@ -1,10 +1,12 @@
 amcl:
   ros__parameters:
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
-    alpha5: 0.2
+    # odom 노이즈 모델. odom이 정확한 게 실측 증명됨(1m→1.004m, 회전도 정확) → 0.2→0.1 로 낮춰
+    # AMCL이 정확한 odom 을 더 믿고 붙게 함. 복귀 턴어라운드/L자 대칭에서 엉뚱한 스캔매칭으로 튀는 것(map→odom 발산) 억제.
+    alpha1: 0.1
+    alpha2: 0.1
+    alpha3: 0.1
+    alpha4: 0.1
+    alpha5: 0.1
     base_frame_id: "base_footprint"
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -22,6 +24,7 @@ amcl:
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
+    # 복구 입자주입. ★L자처럼 회전대칭 있는 방에선 켜면 엉뚱한 자세로 점프 → 0 유지(끔).
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
     resample_interval: 1
@@ -42,7 +45,7 @@ amcl:
       x: 0.0
       y: 0.0
       z: 0.0
-      yaw: 0.0
+      yaw: 0.0           # 새 맵(clean_0611) 원점 = 매핑 시작점·방향. 로봇을 그 자리에 놓고 시작.
 
 bt_navigator:
   ros__parameters:
@@ -88,7 +91,8 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      movement_time_allowance: 30.0   # 10→30: progress_checker는 '직진 이동'만 봄. 제자리 회전은 직진 0이라
+                                       # 느린 50kg 회전이 10초 넘으면 '진전없음'→복구(후진/회전) 폭주. 회전 완료 시간 충분히 줌.
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
@@ -99,7 +103,7 @@ controller_server:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.15
-      yaw_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.10        # 0.25(~14°)→0.10(~6°): 도착 방향 더 정확히. 책상 수직접근용. (최종 정밀정렬은 lidar_approach 가 추가로 함)
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       stateful: true
@@ -107,7 +111,7 @@ controller_server:
       # 기본 주행 속도 (warehouse 통로 환경 고려해 pinky 0.5 → 0.35)
       desired_linear_vel: 0.35
       allow_reversing: false
-      max_angular_accel: 3.2
+      max_angular_accel: 3.2        # 복원(1.2→3.2): odom은 정상으로 확인됨. 50kg는 회전이 직진보다 힘들어 약하면 못 돎 → 회전 권한 되살림.
 
       # Lookahead (속도 비례)
       lookahead_dist: 0.4
@@ -121,7 +125,7 @@ controller_server:
       # 큰 회전 시 제자리 회전 우선 (반대로 도는 증상 차단의 핵심)
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.35
-      rotate_to_heading_angular_vel: 1.0
+      rotate_to_heading_angular_vel: 1.0   # 복원(0.5→1.0): 50kg scrub 마찰 이기려면 세게 돌려야 함. 0.5는 약해서 제자리회전이 굼떠 목표 yaw 못 맞춤.
 
       # 커브 감속
       use_regulated_linear_velocity_scaling: false
@@ -161,11 +165,12 @@ local_costmap:
       height: 3
       resolution: 0.05
       footprint: "[[0.325,0.30],[0.325,-0.30],[-0.325,-0.30],[-0.325,0.30]]"
+      footprint_padding: 0.02   # 물건 잡으려 벽에 붙어야 해서 패딩 최소화 (실제 footprint 로만 충돌방지)
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 5.0
-        inflation_radius: 0.25
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.50
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -199,6 +204,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       footprint: "[[0.325,0.30],[0.325,-0.30],[-0.325,-0.30],[-0.325,0.30]]"
+      footprint_padding: 0.02   # 물건 잡으려 벽에 붙어야 해서 패딩 최소화 (실제 footprint 로만 충돌방지)
       resolution: 0.05
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
@@ -221,8 +227,8 @@ global_costmap:
         map_subscribe_transient_local: True
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 5.0
-        inflation_radius: 0.25
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.50
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.

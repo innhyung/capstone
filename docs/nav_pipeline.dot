@@ -1,0 +1,39 @@
+digraph navpart {
+  rankdir=LR;
+  bgcolor="white";
+  fontname="Noto Sans CJK KR";
+  node [shape=box, style="rounded,filled", fontname="Noto Sans CJK KR",
+        fontsize=15, margin="0.22,0.14", penwidth=1.6, color="#888888"];
+  edge [penwidth=2.2, color="#666666", arrowsize=0.9];
+
+  // ===== ① 매핑 (SLAM) =====
+  subgraph cluster_map {
+    label="①  매핑 (SLAM)";
+    labelloc="t"; fontsize=17; fontcolor="#1A56C4";
+    style="rounded,filled"; fillcolor="#EAF0FE"; color="#4285F4"; penwidth=2.6; margin=14;
+
+    sensors [label="센서\n라이다(S2-Pro)\nIMU·휠 엔코더", fillcolor="#D2E3FC", color="#4285F4"];
+    ekf     [label="EKF 센서 융합\n휠 vx + IMU vyaw", fillcolor="#D2E3FC", color="#4285F4"];
+    slam    [label="slam_toolbox\n실시간 매핑\n(loop closure)", fillcolor="#D2E3FC", color="#4285F4"];
+    savedmap [label="🗺  저장된 맵\nOccupancy Grid", shape=note, fillcolor="#FEF7E0", color="#F9AB00"];
+    sensors -> ekf -> slam -> savedmap;
+  }
+
+  // ===== ② 자율주행 (Nav2) =====
+  subgraph cluster_nav {
+    label="②  자율주행 (Nav2)";
+    labelloc="t"; fontsize=17; fontcolor="#1E7E34";
+    style="rounded,filled"; fillcolor="#EAF7EE"; color="#34A853"; penwidth=2.6; margin=14;
+
+    amcl [label="AMCL 위치추정\n라이다 + 저장맵", fillcolor="#CEEAD6", color="#34A853"];
+    plan [label="경로 계획\nNavFn + Costmap\n(inflation)", fillcolor="#CEEAD6", color="#34A853"];
+    ctrl [label="주행 제어\nPure Pursuit\n→ cmd_vel", fillcolor="#CEEAD6", color="#34A853"];
+    robot [label="🤖  로봇 구동\n목표 지점 도달", fillcolor="#E6F4EA", color="#188038"];
+    amcl -> plan -> ctrl -> robot;
+  }
+
+  // ===== 연결 =====
+  savedmap -> amcl [label="  저장맵 제공", fontname="Noto Sans CJK KR", fontsize=12, fontcolor="#5F6368"];
+  goal [label="🎯  목표 좌표\n(비전 → Goal Pose)", fillcolor="#FCE8E6", color="#EA4335", fontsize=13];
+  goal -> plan [style=dashed, color="#EA4335"];
+}

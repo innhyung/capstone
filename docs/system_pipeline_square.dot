@@ -1,0 +1,24 @@
+digraph system {
+  rankdir=TB;
+  bgcolor="white";
+  fontname="Noto Sans CJK KR";
+  nodesep=1.0; ranksep=0.9;
+  node [shape=box, style="rounded,filled", fontname="Noto Sans CJK KR",
+        fontsize=15, margin="0.26,0.20", penwidth=1.8, color="#888888"];
+  edge [penwidth=2.8, color="#5F6368", arrowsize=1.1];
+
+  voice  [label="🎧  음성 입력\n(블루투스 + STT)\n\"물병 가져와\"", fillcolor="#E8F0FE", color="#4285F4"];
+  vision [label="👁  비전 물체 탐색\n(카메라 + YOLO)\n→ 목표 좌표", fillcolor="#FCE8E6", color="#EA4335"];
+  nav    [label="🧭  Nav2 자율주행\n\n• AMCL 위치추정\n• NavFn 경로 계획\n• Pure Pursuit 제어",
+          fillcolor="#CEEAD6", color="#34A853", penwidth=3.2];
+  arrive [label="🏁  목표 물체 도달\n(자율주행 완료)", fillcolor="#E6F4EA", color="#188038"];
+
+  // U자 흐름: 음성 → 비전 → (↓) Nav2 → (←) 도달
+  voice -> vision;
+  vision -> nav;
+  nav -> arrive [constraint=false];   // 보이는 화살표(배치엔 영향 X)
+  arrive -> nav [style=invis];        // 배치순서: 도달을 Nav2 왼쪽에
+
+  { rank=same; voice; vision; }
+  { rank=same; arrive; nav; }
+}

@@ -1,0 +1,42 @@
+digraph system {
+  rankdir=LR;
+  bgcolor="white";
+  compound=true;
+  fontname="Noto Sans CJK KR";
+  node [shape=box, style="rounded,filled", fontname="Noto Sans CJK KR",
+        fontsize=15, margin="0.22,0.14", penwidth=1.6, color="#888888"];
+  edge [penwidth=2.2, color="#666666", arrowsize=0.9];
+
+  // ---- 입력: 음성 ----
+  voice [label="🎧  음성 명령\n(블루투스 이어폰)\n\"물병 가져와\"", fillcolor="#E8F0FE", color="#4285F4"];
+  stt   [label="음성 인식 (STT)\n물건 이름 추출", fillcolor="#E8F0FE", color="#4285F4"];
+
+  // ---- 비전 ----
+  vision [label="비전 물체 탐색\n전역 카메라 + YOLO\n물건 위치 검출", fillcolor="#FCE8E6", color="#EA4335"];
+  goal   [label="목표 좌표 변환\nmap 프레임\nGoal Pose", fillcolor="#FEF7E0", color="#F9AB00"];
+
+  // ---- 내비게이션 (담당 영역, 강조) ----
+  subgraph cluster_nav {
+    label="Nav2 자율주행";
+    labelloc="t"; fontsize=16; fontcolor="#1E7E34";
+    style="rounded,filled"; fillcolor="#EAF7EE"; color="#34A853"; penwidth=2.6;
+    margin=14;
+    amcl [label="AMCL\n위치추정\n(라이다 + 저장맵)", fillcolor="#CEEAD6", color="#34A853"];
+    plan [label="경로 계획\n(NavFn +\nCostmap)", fillcolor="#CEEAD6", color="#34A853"];
+    ctrl [label="주행 제어\n(Pure Pursuit\n→ cmd_vel)", fillcolor="#CEEAD6", color="#34A853"];
+    amcl -> plan -> ctrl;
+  }
+
+  // ---- 도착 ----
+  arrive [label="🏁  목표 물체 도달\n(자율주행 완료)", fillcolor="#E6F4EA", color="#188038"];
+
+  // ---- 연결 ----
+  voice -> stt -> vision -> goal;
+  goal -> amcl [lhead=cluster_nav];
+  ctrl -> arrive [ltail=cluster_nav];
+
+  // 하단 보조 설명 (SLAM 맵 입력)
+  slam [label="SLAM 사전 매핑\n(slam_toolbox)\n→ 저장된 맵", shape=note,
+        fillcolor="#F1F3F4", color="#9AA0A6", fontsize=12];
+  slam -> amcl [style=dashed, color="#9AA0A6", lhead=cluster_nav];
+}

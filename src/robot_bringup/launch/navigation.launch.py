@@ -60,7 +60,7 @@ def generate_launch_description():
     xacro_file = os.path.join(pkg_urdf, 'urdf', 'full_robot.urdf.xacro')
     nav2_params_file = os.path.join(pkg_urdf, 'config', 'nav2_params.yaml')
     ekf_params = os.path.join(pkg_urdf, 'config', 'ekf.yaml')
-    default_map = os.path.join(pkg_bringup, 'maps', 'my_real_map.yaml')
+    default_map = os.path.join(pkg_bringup, 'maps', 'clean_0611.yaml')  # 6/11 재매핑 맵을 기본값으로
 
     # ---- launch 인자 ----
     port = LaunchConfiguration('port')
@@ -221,11 +221,13 @@ def generate_launch_description():
     )
 
     # ---- 7) RViz2 ----
+    # -d 로 저장된 설정 자동 로드 (없으면 빈 화면이 떠서 매번 Open Config 해야 함)
     rviz = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
         output='screen',
+        arguments=['-d', '/home/min/capstone/nav.rviz'],
         parameters=[{'use_sim_time': False}],
     )
 

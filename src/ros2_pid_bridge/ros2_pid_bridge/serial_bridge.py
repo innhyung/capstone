@@ -110,6 +110,12 @@ class SerialBridge(Node):
                 self.get_logger().error(f'Serial read error: {exc}')
                 break
 
+    # 물리적 한계 — 깨진 시리얼 프레임이 "쉼표4개+전부숫자"면 ValueError 없이 통과한다.
+    # 그 터무니없는 속도/엔코더점프가 EKF 로 들어가면 odom 이 맵 밖으로 순간이동한다 → 여기서 차단.
+    V_MAX = 1.2          # m/s. 실제 최대 ~0.5 라 여유. 이 이상이면 글리치로 보고 프레임 버림.
+    W_MAX = 5.0          # rad/s. 제자리 회전 최대보다 충분히 큼.
+    JUMP_MAX = 0.25      # m. 한 프레임(30~50Hz) 엔코더 이동 한계. 정상은 <0.02m.
+
     def _handle_fb(self, payload: str):
         parts = payload.split(',')
         if len(parts) != 4:
@@ -122,29 +128,42 @@ class SerialBridge(Node):
         except ValueError:
             return
 
+        # FB의 vel_l/vel_r은 좌·우 바퀴 각속도(rad/s)다. 몸체 속도로 변환.
+        v_left = vel_l * self._r          # 왼쪽 바퀴 선속도 (m/s)
+        v_right = vel_r * self._r         # 오른쪽 바퀴 선속도 (m/s)
+        v_body = (v_left + v_right) / 2.0          # 직진 속도 (m/s)
+        w_body = (v_right - v_left) / self._L      # 회전 속도 (rad/s)
+
+        # ★ 속도 글리치 차단: 비정상 속도는 EKF 가 적분해 odom 을 날려버림 → 프레임 통째 버림.
+        #    (EKF 는 빠진 한 프레임을 예측으로 메우므로 무해.) 엔코더 동기도 안 깨게 통째 스킵.
+        if abs(v_body) > self.V_MAX or abs(w_body) > self.W_MAX:
+            self.get_logger().warn(
+                f'비정상 속도 무시 v={v_body:+.2f} w={w_body:+.2f} (시리얼 글리치?) — /odom 발행 건너뜀',
+                throttle_duration_sec=1.0)
+            return
+
         now = self.get_clock().now()
 
         with self._lock:
             if self._encL is not None and self._encR is not None:
                 dl = (enc_l - self._encL) * self._mpt
                 dr = (enc_r - self._encR) * self._mpt
-                d = (dl + dr) / 2.0
-                dth = (dr - dl) / self._L
-                self._x += d * math.cos(self._yaw + dth / 2.0)
-                self._y += d * math.sin(self._yaw + dth / 2.0)
-                self._yaw += dth
-                self._yaw = math.atan2(math.sin(self._yaw), math.cos(self._yaw))
+                # ★ 엔코더 카운트 점프 차단: 한 프레임에 비현실적 이동이면 적분 스킵(엔코더는 재동기).
+                if abs(dl) > self.JUMP_MAX or abs(dr) > self.JUMP_MAX:
+                    self.get_logger().warn(
+                        f'비정상 엔코더 점프 무시 dl={dl:+.2f} dr={dr:+.2f}m (글리치?) — pose 적분 스킵',
+                        throttle_duration_sec=1.0)
+                else:
+                    d = (dl + dr) / 2.0
+                    dth = (dr - dl) / self._L
+                    self._x += d * math.cos(self._yaw + dth / 2.0)
+                    self._y += d * math.sin(self._yaw + dth / 2.0)
+                    self._yaw += dth
+                    self._yaw = math.atan2(math.sin(self._yaw), math.cos(self._yaw))
 
-            self._encL = enc_l
+            self._encL = enc_l           # 글리치여도 재동기 — 다음 프레임 delta 가 또 커지지 않게
             self._encR = enc_r
             x, y, yaw = self._x, self._y, self._yaw
-
-        # FB의 vel_l/vel_r은 좌·우 바퀴 각속도(rad/s)다.
-        # /odom의 twist는 로봇 몸체 속도여야 하므로 변환한다.
-        v_left = vel_l * self._r          # 왼쪽 바퀴 선속도 (m/s)
-        v_right = vel_r * self._r         # 오른쪽 바퀴 선속도 (m/s)
-        v_body = (v_left + v_right) / 2.0          # 직진 속도 (m/s)
-        w_body = (v_right - v_left) / self._L      # 회전 속도 (rad/s)
 
         self._publish_odom(now, x, y, yaw, v_body, w_body)
         if self._tf_bc is not None:

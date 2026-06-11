@@ -27,3 +27,6 @@ frames_*.pdf
 mapping_run*/
 *.mcap
 *.db3
+
+# 에디터 로컬 설정
+.vscode/
