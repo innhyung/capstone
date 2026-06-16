@@ -88,6 +88,13 @@ class LidarApproach(Node):
         # 파지 후 복귀 전, 책상에서 회전 없이 곧장 뒤로 빠질 거리(m). 코앞 제자리회전→AMCL 발산을
         # 회피(열린 공간 확보 후 돌게). 0이면 끔(바로 복귀).
         self.declare_parameter('back_away_dist', 0.40)
+        # ★ 복귀 방식: true 면 '들어온 경로 되짚기'(retrace). Nav2 가 새 경로를 짜고 책상/원점 코앞에서
+        #   180° 도는 위험(뒤 박힘·AMCL 발산)을 피함. 들어올 때 기록한 궤적을 역순으로 후진→1/3 지점(열린 곳)
+        #   에서 180° 회전→나머지는 전진. false 면 옛 방식(Nav2 복귀).
+        self.declare_parameter('retrace_return', True)
+        self.declare_parameter('retrace_flip_frac', 0.333)   # 출발(책상)에서 이 비율 지난 곳에서 180° 회전 (1/3 후진→회전→2/3 전진)
+        self.declare_parameter('retrace_sample_dist', 0.15)  # 들어올 때 궤적 기록 간격(m)
+        self.declare_parameter('retrace_wp_reach', 0.20)     # waypoint 도달 판정 반경(m)
         self.stop_dist = float(self.get_parameter('stop_distance').value)
         self.clearance = float(self.get_parameter('clearance').value)
         self.wall_scan_radius = float(self.get_parameter('wall_scan_radius').value)
@@ -139,12 +146,27 @@ class LidarApproach(Node):
         self.forward_t0 = None        # 마지막 직진 시작 시각(s) — 타임아웃용
         self.front_min = float('inf')
         self.target = None
+        self.pending_target = None    # 받았지만 아직 출발 못 시킨 목표(맵·TF 준비 대기). 카메라가 1회만 보내도 안 놓치게 latch.
         self.home = None              # 초기 위치 (시작 시 1회 기록) — 복귀 목표
         self.perp_mode = False        # 이번 목표가 책상/벽 면 수직접근인지(=라이다 추가전진 생략, staging 도착 후 정밀정렬)
         self.goal_yaw = None          # 도착 후 맞출 목표 방향(수직접근 시 책상 면 법선의 반대 = 면 정면)
         self.back_start = None        # 후진 시작 위치(복귀 전 책상에서 빠질 때 거리 측정용)
         self.return_goal = None       # 후진 끝나고 보낼 복귀 목표 (hx, hy, yaw)
-        self.state = 'IDLE'           # IDLE/NAVIGATING/APPROACHING/ALIGNING/PAUSING/FORWARD/ARRIVED/BACKING/RETURNING/HOME
+        self.inbound_path = []        # 들어올 때 실제 궤적 (map (x,y) waypoint 들) — retrace 복귀용
+        self.return_route = []        # 복귀 경로 = inbound_path 역순
+        self.route_idx = 0            # 현재 추종 중인 return_route 인덱스
+        self.flip_idx = 0             # 이 인덱스 도달 시 180° 회전 (출발서 flip_frac 지난 곳, 기본 1/3)
+        self.flip_t0_yaw = None       # 180° 회전 시작 yaw
+        self.last_rec = None          # 마지막 기록 waypoint (간격 판정용)
+        self.retrace = bool(self.get_parameter('retrace_return').value)
+        self.flip_frac = float(self.get_parameter('retrace_flip_frac').value)
+        self.sample_dist = float(self.get_parameter('retrace_sample_dist').value)
+        self.wp_reach = float(self.get_parameter('retrace_wp_reach').value)
+        # 복귀 속도 — 들어온 속도(Nav2 desired_linear_vel 0.35)에 맞춤. 접근용 self.v(0.12)는 책상 정밀용이라 따로.
+        self.retrace_v_fwd = 0.35     # 전진(라이다 보호됨) = 들어온 Nav2 속도와 동일
+        self.retrace_v_back = 0.20    # 후진(UR3가 뒤 가려 블라인드) — 드리프트·충돌 위험 줄이게 보수적
+        self.state = 'IDLE'           # IDLE/NAVIGATING/APPROACHING/ALIGNING/PAUSING/FORWARD/ARRIVED/
+                                      # BACKING/RETURNING/HOME + (retrace) RETRACE_BACK/FLIP/RETRACE_FWD
         self.create_timer(0.1, self.control)
         self.get_logger().info(
             f'lidar_approach 시작 — 목표[{target_topic}] → Nav2+라이다 {self.stop_dist}m 접근, '
@@ -187,19 +209,37 @@ class LidarApproach(Node):
         self.marker_pub.publish(m)
 
     def on_target(self, msg):
-        if self.grid is None:
-            self.get_logger().warn('/map 아직 수신 안 됨 — 잠시 후 다시 목표 발행')
-            return
-        self.target = (msg.point.x, msg.point.y)
+        # ★ 카메라는 목표를 딱 한 번만 발행한다 → 절대 드롭하지 말 것.
+        #   맵·TF·staging 이 그 찰나에 준비 안 됐어도 일단 보관(latch)하고,
+        #   control() 이 준비되는 즉시 출발시킨다(try_start_pending). 단 한 번이면 충분.
+        self.pending_target = (msg.point.x, msg.point.y)
         self.publish_marker(msg.point.x, msg.point.y)   # RViz 에 목표 표시
+        self.get_logger().info(
+            f'목표 수신 ({msg.point.x:.2f}, {msg.point.y:.2f}) — 준비되는 대로 출발')
+
+    def try_start_pending(self):
+        """보관된 목표를 전제조건(맵·TF·staging)이 갖춰지면 출발시킨다. control() 이 매 틱 호출.
+        준비 안 됐으면 버리지 않고 다음 틱에 다시 시도 → 1회 발행만으로 확실히 움직임."""
+        if self.pending_target is None:
+            return
+        if self.state not in ('IDLE', 'HOME'):
+            return                       # 미션 중엔 새 목표 끼어들기 금지 — 끝나고 처리
+        if self.grid is None:
+            self.get_logger().warn('/map 대기 중 — 목표 보류(재시도)', throttle_duration_sec=2.0)
+            return
         pose = self.robot_pose()
         if pose is None:
-            self.get_logger().warn('TF(map->base) 없음 — 목표 무시')
+            self.get_logger().warn('TF(map->base) 대기 중 — 목표 보류(재시도)', throttle_duration_sec=2.0)
             return
-        stage = self.find_staging(self.target[0], self.target[1], pose[0], pose[1])
+        tx, ty = self.pending_target
+        self.target = (tx, ty)
+        stage = self.find_staging(tx, ty, pose[0], pose[1])
         if stage is None:
-            self.get_logger().error('목표 근처에 접근 가능한 staging 지점 없음 (벽으로 둘러싸임?)')
+            self.get_logger().error(
+                '접근 가능한 staging 지점 못 찾음 — 재시도 중 (목표가 벽에 둘러싸였는지/위치 확인)',
+                throttle_duration_sec=2.0)
             return
+        self.pending_target = None       # 출발 확정 — 보관 해제
         sx, sy, yaw = stage
         self.send_nav_goal(sx, sy, yaw)
 
@@ -364,6 +404,10 @@ class LidarApproach(Node):
         goal = NavigateToPose.Goal()
         goal.pose = p
         self.goal_yaw = yaw          # 도착 후 정밀정렬용 목표 방향 기억
+        # retrace 용 궤적 기록 초기화 — 현재 위치(=미션 시작점)부터 기록 시작
+        p0 = self.robot_pose()
+        self.inbound_path = [(p0[0], p0[1])] if p0 is not None else []
+        self.last_rec = (p0[0], p0[1]) if p0 is not None else None
         self.state = 'NAVIGATING'
         self.get_logger().info(f'[1단계] staging({x:.2f},{y:.2f}) 로 Nav2 이동 (벽 회피)')
         self.nav.send_goal_async(goal).add_done_callback(self._nav_accepted)
@@ -407,8 +451,13 @@ class LidarApproach(Node):
         # 복귀 도착 자세 = 시작자세 + return_flip(기본 180°=-y). 0 이면 시작과 같은 방향(큰 회전 없음).
         return_yaw = normalize(hyaw + self.return_flip)
         self.return_goal = (hx, hy, return_yaw)
-        # ★ 바로 복귀(=책상 코앞 180° 회전)하면 라이다가 책상에 꽉 차 AMCL 발산. 먼저 회전 없이
-        #   곧장 후진해 책상에서 벗어난 뒤(열린 공간) 복귀. back_away_dist=0 이면 바로 복귀.
+        # ★ 1순위: 들어온 길 되짚기(retrace). Nav2 새 경로/코앞 180° 회전(뒤 박힘·발산) 회피.
+        #   경로 기록이 충분하면 RETRACE_BACK 시작. 부족하면 아래 옛 방식으로 폴백.
+        if self.retrace and self._start_retrace():
+            self.get_logger().info('✋ 파지 완료 → 들어온 길 되짚어 복귀')
+            return
+        # ★ (폴백) 바로 복귀(=책상 코앞 180° 회전)하면 라이다가 책상에 꽉 차 AMCL 발산. 먼저 회전 없이
+        #   곧장 후진해 책상에서 벗어난 뒤(열린 공간) Nav2 복귀. back_away_dist=0 이면 바로 복귀.
         if self.back_away_dist > 0.0:
             p = self.robot_pose()
             self.back_start = (p[0], p[1]) if p is not None else None
@@ -500,6 +549,124 @@ class LidarApproach(Node):
         except tf2_ros.TransformException:
             return None
 
+    # ---------- retrace 복귀 (들어온 길 되짚기) ----------
+    def _record_inbound(self):
+        """들어오는 동안 sample_dist 간격으로 실제 위치를 inbound_path 에 기록."""
+        p = self.robot_pose()
+        if p is None:
+            return
+        if self.last_rec is None or math.hypot(p[0]-self.last_rec[0], p[1]-self.last_rec[1]) >= self.sample_dist:
+            self.inbound_path.append((p[0], p[1]))
+            self.last_rec = (p[0], p[1])
+
+    def _start_retrace(self):
+        """파지 후 호출. inbound_path 역순으로 복귀 경로를 만들고 flip 지점(flip_idx)을 정해 RETRACE_BACK 시작.
+        경로가 너무 짧거나(<2) pose 없으면 False → 호출부가 옛 Nav2 복귀로 폴백."""
+        if len(self.inbound_path) < 2:
+            return False
+        route = list(reversed(self.inbound_path))     # [도착지 ... 원점]
+        # 누적 길이로 출발(책상)에서 flip_frac 지난 지점 인덱스 찾기. 기본 1/3 — 좁은 통로(원점 부근)서 회전 회피.
+        seg = [math.hypot(route[i+1][0]-route[i][0], route[i+1][1]-route[i][1]) for i in range(len(route)-1)]
+        total = sum(seg) or 1e-9
+        acc = 0.0; flip_i = len(route)-1
+        for i, s in enumerate(seg):
+            acc += s
+            if acc >= self.flip_frac * total:
+                flip_i = i+1; break
+        self.return_route = route
+        self.flip_idx = flip_i
+        self.route_idx = 1                            # 0 은 현재 위치
+        self.flip_t0_yaw = None
+        self.state = 'RETRACE_BACK'
+        self.get_logger().info(
+            f'↩️ 들어온 길 되짚기 시작 — waypoint {len(route)}개, 출발서 {self.flip_frac:.0%} 지점({flip_i}/{len(route)-1})까지 후진 후 180° 회전')
+        return True
+
+    def _retrace_drive(self, reverse):
+        """return_route 를 추종. reverse=True 면 후진(앞은 그대로, 뒤가 진행방향), False 면 전진."""
+        pose = self.robot_pose()
+        if pose is None:
+            self.cmd_pub.publish(Twist()); return
+        rx, ry, yaw = pose
+        # 후진 구간은 flip_idx 까지, 전진 구간은 끝까지가 목표
+        end_idx = self.flip_idx if reverse else len(self.return_route)-1
+        # 도달한 waypoint 들 건너뛰기
+        while self.route_idx < end_idx and \
+                math.hypot(self.return_route[self.route_idx][0]-rx,
+                           self.return_route[self.route_idx][1]-ry) < self.wp_reach:
+            self.route_idx += 1
+        tx, ty = self.return_route[self.route_idx]
+        if self.route_idx >= end_idx and math.hypot(tx-rx, ty-ry) < self.wp_reach:
+            self.cmd_pub.publish(Twist())
+            if reverse:                               # 후진 끝 → 180° 회전
+                self.flip_t0_yaw = yaw
+                self.state = 'FLIP'
+                self.get_logger().info(f'후진 {self.flip_frac:.0%} 지점 도달 → 제자리 180° 회전 (열린 공간)')
+            else:                                     # 전진 끝 → 원점 도착
+                self.state = 'HOME'
+                self.get_logger().info('🏠 들어온 길 되짚어 원점 복귀 완료. 다음 목표 대기.')
+            return
+        dir_to = math.atan2(ty-ry, tx-rx)
+        # 후진이면 '뒤(yaw+π)'가, 전진이면 '앞(yaw)'이 목표를 향하게
+        ref = normalize(yaw + math.pi) if reverse else yaw
+        err = normalize(dir_to - ref)
+        cmd = Twist()
+        cmd.angular.z = max(-self.w, min(self.w, 1.0 * err))
+        # 어느 정도 정렬됐을 때만 진행(후진=-, 전진=+). 큰 오차면 회전 우선.
+        spd = self.retrace_v_back if reverse else self.retrace_v_fwd
+        if abs(err) < 0.6:
+            cmd.linear.x = (-spd if reverse else spd) * max(0.3, math.cos(err))
+        note = ''
+        # ★ 전진 구간만 라이다 '전방 안전'(감속/정지)만 적용. 후진은 UR3가 뒤를 가려 라이다 X → 기록경로만.
+        #   ※ 통로 중앙정렬(좌우 조향 보정)은 제거함 — 조향을 계속 건드리면 50kg가 좌우로 흔들→바퀴 슬립
+        #     →odom 튕김(복귀 후 다음 목표 빗나감). 순수 경로추종은 안 튕김. 전방안전은 직진속도만 줄여 흔들림 0.
+        if not reverse:
+            if self.front_min < 0.32:                 # footprint 앞 0.325 직전 → 정지
+                cmd.linear.x = 0.0
+                note = f' | ⚠️전방 {self.front_min:.2f}m 정지'
+            elif self.front_min < 0.55:
+                cmd.linear.x *= 0.4
+                note = f' | 전방 {self.front_min:.2f}m 감속'
+        self.cmd_pub.publish(cmd)
+        self.get_logger().info(
+            f'{"후진" if reverse else "전진"} 되짚기 — wp {self.route_idx}/{end_idx}, 남은 {math.hypot(tx-rx,ty-ry):.2f}m{note}',
+            throttle_duration_sec=1.0)
+
+    def _side_dists(self):
+        """좌(+90°)·우(−90°) 각 ±20° 호의 최소거리(m). 통로 중앙정렬용. 못 읽으면 (None, None)."""
+        msg = self.scan
+        if msg is None:
+            return None, None
+        dL = dR = float('inf')
+        arc = math.radians(20.0)
+        for i, r in enumerate(msg.ranges):
+            if not (msg.range_min < r < msg.range_max and math.isfinite(r)):
+                continue
+            a = msg.angle_min + i * msg.angle_increment
+            if abs(normalize(a - math.pi/2)) <= arc:
+                dL = min(dL, r)
+            elif abs(normalize(a + math.pi/2)) <= arc:
+                dR = min(dR, r)
+        return (dL if dL < float('inf') else None), (dR if dR < float('inf') else None)
+
+    def _retrace_flip(self):
+        """RETRACE_BACK 끝 지점에서 제자리 180° 회전 → 끝나면 RETRACE_FWD."""
+        pose = self.robot_pose()
+        if pose is None or self.flip_t0_yaw is None:
+            self.cmd_pub.publish(Twist()); return
+        turned = abs(normalize(pose[2] - self.flip_t0_yaw))
+        if turned >= math.pi - self.align_yaw_tol:
+            self.cmd_pub.publish(Twist())
+            self.state = 'RETRACE_FWD'
+            self.get_logger().info('180° 회전 완료 → 나머지 길 전진으로 원점 복귀')
+            return
+        cmd = Twist()
+        wz = self.w
+        if wz < self.align_min_w:
+            wz = self.align_min_w
+        cmd.angular.z = wz                            # 한 방향으로 계속 돌아 180°
+        self.cmd_pub.publish(cmd)
+
     def control(self):
         if self.home is None:                       # 초기 위치 1회 기록 (복귀용)
             p = self.robot_pose()
@@ -507,6 +674,17 @@ class LidarApproach(Node):
                 self.home = p
                 self.get_logger().info(
                     f'초기 위치 기록: ({p[0]:.2f}, {p[1]:.2f}, {math.degrees(p[2]):.0f}°)')
+        self.try_start_pending()                    # 보관된 목표가 있으면 준비되는 즉시 출발(1회 발행 보장)
+        # 들어오는 동안 실제 궤적 기록(retrace 복귀용). 도착 전 모든 이동 상태에서.
+        if self.state in ('NAVIGATING', 'APPROACHING', 'ALIGNING', 'PAUSING', 'FORWARD'):
+            self._record_inbound()
+        # ---- retrace 복귀: 들어온 길 역순 후진 → 1/3 지점서 180° → 전진 ----
+        if self.state == 'RETRACE_BACK':
+            self._retrace_drive(reverse=True); return
+        if self.state == 'FLIP':
+            self._retrace_flip(); return
+        if self.state == 'RETRACE_FWD':
+            self._retrace_drive(reverse=False); return
         # 수직접근 도착 후 정밀정렬: 라이다로 '진짜 앞 벽'에 수직이 되게 제자리 회전 (AMCL 무관).
         if self.state == 'ALIGNING':
             src = '라이다'
@@ -604,17 +782,25 @@ class LidarApproach(Node):
             return
         rx, ry, yaw = pose
         tx, ty = self.target
-        heading_err = normalize(math.atan2(ty - ry, tx - rx) - yaw)
+        # ★ perp 모드: 목표점 재조준(=계속 회전→50kg 슬립→AMCL 드리프트, 22° 틀어짐의 원인) 대신
+        #   법선(goal_yaw) 유지하며 직진. 데드밴드 크게(~6°) → 큰 드리프트만 보정, 미세회전 안 함.
+        #   회전 최소화 = 슬립 최소 = 수직 유지(라이다=실제벽 끝까지). 개방공간은 기존대로 목표점 추종.
+        if self.perp_mode and self.goal_yaw is not None:
+            heading_err = normalize(self.goal_yaw - yaw)
+            deadband = 0.105                 # ~6°: 이보다 작으면 회전 0, 곧장 직진
+        else:
+            heading_err = normalize(math.atan2(ty - ry, tx - rx) - yaw)
+            deadband = 0.05
         cmd = Twist()
-        # 부드러운 추종: 회전·전진 동시. 제자리 회전으로 안 빠져서 떨림 방지.
-        if abs(heading_err) < 0.05:          # 데드밴드(~3°): 미세오차엔 회전 안 함
+        if abs(heading_err) < deadband:      # 정렬됨/미세오차 → 회전 0, 직진만 (드리프트 최소)
             cmd.angular.z = 0.0
         else:
             cmd.angular.z = max(-self.w, min(self.w, 0.8 * heading_err))  # 낮은 gain
-        if abs(heading_err) < 0.7:           # ~40° 안으로 향하면 전진(정렬되며 따라감)
+        if abs(heading_err) < 0.7:           # ~40° 안으로 향하면 전진
             cmd.linear.x = self.v * max(0.3, math.cos(heading_err))
         self.get_logger().info(
-            f'접근 중 — 목표까지 {math.hypot(tx-rx,ty-ry):.2f}m, 앞 라이다 {self.front_min:.2f}m',
+            f'접근 중({"법선유지" if self.perp_mode else "목표추종"}) — 목표 {math.hypot(tx-rx,ty-ry):.2f}m, '
+            f'앞 라이다 {self.front_min:.2f}m, 회전 {math.degrees(cmd.angular.z):+.0f}°/s',
             throttle_duration_sec=1.0)
         self.cmd_pub.publish(cmd)
 

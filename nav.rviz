@@ -8,6 +8,7 @@ Panels:
         - /Status1
         - /TF1
         - /TF1/Frames1
+        - /LaserScan1
         - /LaserScan1/Topic1
         - /Map1
         - /Map1/Topic1
@@ -107,7 +108,7 @@ Visualization Manager:
           Value: true
         odom:
           Value: true
-      Marker Scale: 1
+      Marker Scale: 2
       Name: TF
       Show Arrows: true
       Show Axes: true
@@ -213,7 +214,7 @@ Visualization Manager:
       Position Transformer: XYZ
       Selectable: true
       Size (Pixels): 3
-      Size (m): 0.009999999776482582
+      Size (m): 0.05000000074505806
       Style: Flat Squares
       Topic:
         Depth: 5
@@ -229,7 +230,7 @@ Visualization Manager:
       Binary representation: false
       Binary threshold: 100
       Class: rviz_default_plugins/Map
-      Color Scheme: costmap
+      Color Scheme: map
       Draw Behind: false
       Enabled: true
       Name: Map
@@ -317,25 +318,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 9.044761657714844
+      Distance: 6.8541107177734375
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.9660888910293579
-        Y: 1.370300054550171
-        Z: 2.664863348007202
+        X: 2.749748706817627
+        Y: 1.1356711387634277
+        Z: 3.8210196495056152
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.209796667098999
+      Pitch: 1.5597963333129883
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 3.115400791168213
+      Yaw: 3.100400924682617
     Saved: ~
 Window Geometry:
   Displays:
@@ -353,5 +354,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 960
-  X: 0
-  Y: 49
+  X: 102
+  Y: 62

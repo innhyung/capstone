@@ -71,10 +71,9 @@ def generate_launch_description():
         'rpi_host', default_value='danial@10.42.0.78',
         description='라즈베리파이 SSH 대상 (user@ip).')
     declare_skip_upload = DeclareLaunchArgument(
-        'skip_upload', default_value='false',
-        description='기본 false (매 launch 마다 펌웨어 자동 업로드). 펌웨어와 launch param 일치 보장. '
-                    '⚠️ 업로드 중 ESP32 부트로더 단계에서 GPIO 가 떠 모터가 잠깐 구동될 수 있으니 '
-                    '반드시 모터 전원 OFF 상태에서 launch 시작할 것.')
+        'skip_upload', default_value='true',
+        description='기본 true (펌웨어 업로드 건너뜀 — 펌웨어 고정됨 2026-06-15, 모터 전진 글리치 방지). '
+                    '펌웨어 수정했을 때만 skip_upload:=false 로 업로드(이땐 모터 전원 OFF로 시작).')
     declare_skip_rpi = DeclareLaunchArgument(
         'skip_rpi', default_value='false',
         description='true 면 라파 SSH 단계 건너뜀 (PC 단독 디버그용).')

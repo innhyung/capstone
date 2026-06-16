@@ -1,9 +1,10 @@
 """
-realmap_sim.launch.py — 실제 로봇 맵(real_real_final)을 Gazebo 월드로 재현해 검증.
+realmap_sim.launch.py — 실제 로봇 맵(clean_0611)을 Gazebo 월드로 재현해 검증.
 
-map_to_sdf.py 로 만든 real_room.sdf(월드 좌표계=맵 좌표계) 에서:
-  Gazebo + 로봇 spawn(맵 좌표 그대로) + 브릿지 + Nav2(AMCL+real_real_final 맵)
+map_to_sdf.py 로 만든 clean_0611_room.sdf(월드 좌표계=맵 좌표계) 에서:
+  Gazebo + 로봇 spawn(맵 좌표 그대로) + 브릿지 + Nav2(AMCL+clean_0611 맵)
   + 초기위치 자동 고정(/initialpose) + RViz.
+  ★실물 grab_mission 과 최대한 동일: 같은 맵·같은 nav2_params·같은 lidar_approach 파라미터.
 
 검증 흐름:
   ros2 launch ur3_4040_urdf realmap_sim.launch.py
@@ -11,7 +12,8 @@ map_to_sdf.py 로 만든 real_room.sdf(월드 좌표계=맵 좌표계) 에서:
   python3 scripts/approach_point.py        # 0.7m 접근 노드
   # RViz Publish Point 로 목표 클릭 → 0.7m 앞에서 목표 바라보며 정지하는지 확인
 
-핵심: 월드=맵 좌표계라, 실제에서 쓰던 좌표(1.3924,-4.0099 등)가 시뮬에서도 동일 위치.
+핵심: 월드=맵 좌표계라, 실제에서 쓰던 map 좌표가 시뮬에서도 동일 위치.
+목표는 RViz Publish Point 로 책상 클릭해 새 clean_0611 좌표로 줄 것(옛 좌표 무효).
 """
 import os
 import math
@@ -25,13 +27,14 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-# 시작 포즈 (맵 좌표 = 월드 좌표). 방위 +y = yaw 90°.
-START_X = 1.3924
-START_Y = -4.0099
+# 시작 포즈 (맵 좌표 = 월드 좌표). ★clean_0611 은 SLAM 시작점 = map 원점(0,0,0) 이라
+# spawn 도 (0,0,0,yaw0) — nav2_params amcl initial_pose(0,0,0) 와 반드시 일치해야 함.
+START_X = 0.0
+START_Y = 0.0
 START_Z = 0.15
-START_YAW = math.pi / 2.0          # +y 방향
-WORLD = '/home/min/capstone/src/ur3_4040_urdf/worlds/real_room.sdf'
-MAP = '/home/min/capstone/src/robot_bringup/maps/real_real_final_0604.yaml'
+START_YAW = 0.0                     # 매핑 시작 시 바라보던 방향 = map x축
+WORLD = '/home/min/capstone/src/ur3_4040_urdf/worlds/clean_0611_room.sdf'
+MAP = '/home/min/capstone/src/robot_bringup/maps/clean_0611.yaml'
 RVIZ = '/home/min/capstone/nav.rviz'
 
 
@@ -103,8 +106,8 @@ def generate_launch_description():
                               'use_sim_time': 'true', 'autostart': 'true'}.items(),
         )])
 
-    # 초기위치는 nav2_params.yaml 의 amcl set_initial_pose(1.3924,-4.0099,yaw90) 로 확정.
-    # spawn 좌표와 동일해야 함 — 둘 다 START_* 기준. (타이밍 의존 /initialpose publish 제거)
+    # 초기위치는 nav2_params.yaml 의 amcl set_initial_pose(0,0,0) 로 확정 = clean_0611 원점.
+    # spawn 좌표(START_*=0,0,0)와 동일해야 함. (타이밍 의존 /initialpose publish 제거)
 
     # RViz
     rviz = Node(
@@ -115,9 +118,12 @@ def generate_launch_description():
 
     # 7) lidar_approach (Nav2 뜬 뒤 18초) — 시뮬도 grab_mission 처럼 한 런치에 포함.
     #    시뮬이라 use_sim_time:=true 필수.
+    #    파라미터를 실물 grab_mission 과 동일하게 맞춤(stop_distance 0.40, back_away 0.55).
+    #    나머지(standoff 0.50·wall_scan_radius 0.55·pause_sec 1.5·approach_run 0.30)는 노드 기본값이 이미 실물과 같음.
     approach = TimerAction(period=18.0, actions=[ExecuteProcess(
         cmd=['python3', '/home/min/capstone/scripts/lidar_approach.py',
-             '--ros-args', '-p', 'use_sim_time:=true', '-p', 'stop_distance:=0.45'],
+             '--ros-args', '-p', 'use_sim_time:=true',
+             '-p', 'stop_distance:=0.40', '-p', 'back_away_dist:=0.55'],
         output='screen', name='lidar_approach')])
 
     return LaunchDescription([

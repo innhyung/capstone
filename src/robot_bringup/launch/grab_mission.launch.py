@@ -47,17 +47,20 @@ def generate_launch_description():
     wall_scan_radius = LaunchConfiguration('wall_scan_radius')
     pause_sec = LaunchConfiguration('pause_sec')
     approach_run = LaunchConfiguration('approach_run')
+    back_away_dist = LaunchConfiguration('back_away_dist')
+    retrace_return = LaunchConfiguration('retrace_return')
 
     declare_map = DeclareLaunchArgument(
         'map', default_value=default_map, description='네비게이션 맵 yaml 경로')
     declare_skip_upload = DeclareLaunchArgument(
-        'skip_upload', default_value='false',
-        description='기본 false (펌웨어 자동 업로드 — 모터 전원 OFF 로 시작할 것).')
+        'skip_upload', default_value='true',
+        description='기본 true (펌웨어 업로드 건너뜀 — 펌웨어 고정됨 2026-06-15, 모터 전진 글리치 방지). 펌웨어 수정 시만 skip_upload:=false.')
     declare_skip_rpi = DeclareLaunchArgument(
         'skip_rpi', default_value='false', description='true 면 라파 SSH 건너뜀.')
     declare_stop = DeclareLaunchArgument(
-        'stop_distance', default_value='0.45',
-        description='[개방공간 모드] 라이다 정지 거리(m) — 앞 물체 이 거리에서 정지.')
+        'stop_distance', default_value='0.40',
+        description='[개방공간 모드] 라이다 정지 거리(m) — 앞 물체 이 거리에서 정지. '
+                    'footprint 앞길이 0.325m 보다 커야 안 들이받음(하한 ~0.35). 0.40=책상까지 7.5cm 여유.')
     declare_standoff = DeclareLaunchArgument(
         'standoff', default_value='0.50',
         description='[책상/벽 수직접근 모드] 책상 앞면~로봇 중심 정지거리(m). 맵으로 멈춰서 실물 오차 흡수 위해 여유 두기(0.6~0.7). 너무 가까우면 키울 것.')
@@ -70,6 +73,15 @@ def generate_launch_description():
     declare_run = DeclareLaunchArgument(
         'approach_run', default_value='0.30',
         description='[수직접근] Nav2 가 최종보다 이만큼 뒤에 멈춤 → 그만큼 마지막에 곧장 직진(라이다 정지). 직진 구간 길이.')
+    declare_back = DeclareLaunchArgument(
+        'back_away_dist', default_value='0.55',
+        description='파지 완료 후 복귀 전, 회전 없이 곧장 뒤로 빠질 거리(m). 책상 코앞 180° 턴어라운드 '
+                    'AMCL 발산 회피용. 0.40→0.55 로 조금 더 빠진 뒤 열린 공간에서 복귀. 0이면 끔(바로 복귀). '
+                    '※ retrace_return:=true(기본)면 이 값 대신 retrace 가 복귀를 담당.')
+    declare_retrace = DeclareLaunchArgument(
+        'retrace_return', default_value='true',
+        description='복귀 방식. true(기본)=들어온 길 되짚기(역순 후진→출발서 1/3 지점서 180°→전진, 코앞·좁은통로 회전·뒤박힘 회피). '
+                    'false=옛 Nav2 복귀(back_away 후진 후 새 경로). ★문제 생기면 retrace_return:=false 로 즉시 복원.')
 
     # 1) 실물 네비게이션 통째 포함 (RPi 센서 + serial_bridge + EKF + Nav2 + RViz)
     navigation = IncludeLaunchDescription(
@@ -89,12 +101,14 @@ def generate_launch_description():
              '-p', ['standoff:=', standoff],
              '-p', ['wall_scan_radius:=', wall_scan_radius],
              '-p', ['pause_sec:=', pause_sec],
-             '-p', ['approach_run:=', approach_run]],
+             '-p', ['approach_run:=', approach_run],
+             '-p', ['back_away_dist:=', back_away_dist],
+             '-p', ['retrace_return:=', retrace_return]],
         output='screen',
         name='lidar_approach')])
 
     return LaunchDescription([
         declare_map, declare_skip_upload, declare_skip_rpi, declare_stop, declare_standoff,
-        declare_wall_radius, declare_pause, declare_run,
+        declare_wall_radius, declare_pause, declare_run, declare_back, declare_retrace,
         navigation, approach,
     ])

@@ -43,8 +43,8 @@ ydlidar_ros2_driver_node:
     isSingleChannel: true
     intensity: false
     support_motor_dtr: false
-    angle_max: 180.0
-    angle_min: -180.0
+    angle_max: 85.0     # 정면 ±85°(170°)만 발행. 후방(±105~180°)은 UR3/프레임에 막혀 0.1~0.3m 유령 반사가
+    angle_min: -85.0    # /scan 에 들어가 costmap 유령장애물·AMCL 스캔매칭 오염 → 잘라냄. (실물 /scan 측정값 기반, 2026-06-13)
     range_max: 12.0
     range_min: 0.1
     frequency: 10.0

@@ -11,18 +11,23 @@ class BNO055Node(Node):
 
         self.declare_parameter('i2c_address', 0x29)
         self.declare_parameter('frame_id', 'imu_link')
-        self.declare_parameter('publish_rate_hz', 50.0)
+        self.declare_parameter('publish_rate_hz', 100.0)   # 자이로만 읽어 빨라졌으니 상한↑(실제는 I2C 한계로 settle)
         # 자이로 yaw rate 스케일 보정. 2026-06-04 실물 3바퀴 테스트.
         # ⚠️ 1차로 IMU orientation(쿼터니언) 5.6% under 만 보고 1.059 적용 → 과보정이었음.
         # EKF 가 실제 쓰는 건 orientation 이 아니라 rate(angular_velocity.z)인데,
         # rate 는 원래 거의 정확(±1%)했음. scale 1.059 일 때 EKF heading 1156°(truth 1080°, +7%).
         # → 1.059×1078.7/1156.4 = 0.988 로 내려 EKF heading 이 휠/실제와 일치하게 함.
-        self.declare_parameter('gyro_scale', 0.988)
+        # 2026-06-13(저녁) rosbag 정량 재측정: 7바퀴 물리 +2520° 회전 시 자이로(scale 1.0935)는 +2854°(×1.133)로
+        # 13% 과대, 휠은 +2530°(×1.004)로 정확 → 1.0935는 눈대중 오측이었음. raw 자이로 3.6% 과대 → 0.965 로 보정
+        # (휠/실제와 일치). 1.0935 가 회전마다 +z 헤딩 주입 → AMCL 누적 틀어짐의 진짜 원인이었음. 상세 [[imu-gyro-yaw-scale]]
+        self.declare_parameter('gyro_scale', 0.965)
 
         address = self.get_parameter('i2c_address').value
         self.frame_id = self.get_parameter('frame_id').value
         rate = self.get_parameter('publish_rate_hz').value
         self.gyro_scale = float(self.get_parameter('gyro_scale').value)
+        # ★ 런타임 튜닝: ros2 param set /bno055_node gyro_scale X 하면 재시작 없이 즉시 반영
+        self.add_on_set_parameters_callback(self._on_param)
 
         i2c = board.I2C()
         self.sensor = adafruit_bno055.BNO055_I2C(i2c, address=address)
@@ -40,73 +45,53 @@ class BNO055Node(Node):
             f'{rate}Hz, mode=0x{self.sensor.mode:02X} IMUPLUS)'
         )
 
+    def _on_param(self, params):
+        from rcl_interfaces.msg import SetParametersResult
+        for p in params:
+            if p.name == 'gyro_scale':
+                self.gyro_scale = float(p.value)
+                self.get_logger().info(f'gyro_scale 런타임 변경 → {self.gyro_scale}')
+        return SetParametersResult(successful=True)
+
     def publish_data(self):
         now = self.get_clock().now().to_msg()
-
+        # ★ EKF 는 IMU 에서 angular_velocity.z(yaw rate) 만 쓴다(imu0_config 12번째만 true).
+        #   그래서 quaternion·accel·mag 를 안 읽고 '자이로만' 읽는다 → I2C 5읽기→1읽기 → 발행률↑
+        #   (BNO055 I2C 읽기당 ~10ms 라 19Hz 천장이었음. 자이로만이면 40~50Hz 기대).
         try:
-            quat = self.sensor.quaternion
             gyro = self.sensor.gyro
-            accel = self.sensor.linear_acceleration
-            mag = self.sensor.magnetic
-            cal = self.sensor.calibration_status
-
-            imu_msg = Imu()
-            imu_msg.header.stamp = now
-            imu_msg.header.frame_id = self.frame_id
-
-            if quat and None not in quat:
-                imu_msg.orientation.w = float(quat[0])
-                imu_msg.orientation.x = float(quat[1])
-                imu_msg.orientation.y = float(quat[2])
-                imu_msg.orientation.z = float(quat[3])
-
-            if gyro and None not in gyro:
-                # gyro_scale: 자이로 스케일 보정 (5.6% under-read → ×1.059). 위 선언부 참고.
-                imu_msg.angular_velocity.x = float(gyro[0]) * self.gyro_scale
-                imu_msg.angular_velocity.y = float(gyro[1]) * self.gyro_scale
-                imu_msg.angular_velocity.z = float(gyro[2]) * self.gyro_scale
-
-            if accel and None not in accel:
-                imu_msg.linear_acceleration.x = float(accel[0])
-                imu_msg.linear_acceleration.y = float(accel[1])
-                imu_msg.linear_acceleration.z = float(accel[2])
-
-            imu_msg.orientation_covariance = [
-                0.0025, 0.0, 0.0,
-                0.0, 0.0025, 0.0,
-                0.0, 0.0, 0.0025,
-            ]
-            imu_msg.angular_velocity_covariance = [
-                0.02, 0.0, 0.0,
-                0.0, 0.02, 0.0,
-                0.0, 0.0, 0.02,
-            ]
-            imu_msg.linear_acceleration_covariance = [
-                0.04, 0.0, 0.0,
-                0.0, 0.04, 0.0,
-                0.0, 0.0, 0.04,
-            ]
-            self.imu_pub.publish(imu_msg)
-
-            if mag and None not in mag:
-                mag_msg = MagneticField()
-                mag_msg.header.stamp = now
-                mag_msg.header.frame_id = self.frame_id
-                # μT → Tesla
-                mag_msg.magnetic_field.x = float(mag[0]) * 1e-6
-                mag_msg.magnetic_field.y = float(mag[1]) * 1e-6
-                mag_msg.magnetic_field.z = float(mag[2]) * 1e-6
-                self.mag_pub.publish(mag_msg)
-
-            sys_cal, gyro_cal, accel_cal, mag_cal = cal
-            if mag_cal < 3 or sys_cal < 3:
-                self.get_logger().warn(
-                    f'Cal: sys={sys_cal} gyro={gyro_cal} accel={accel_cal} mag={mag_cal}',
-                    throttle_duration_sec=5.0,
-                )
-
         except Exception as e:
-            self.get_logger().error(f'sensor read error: {e}', throttle_duration_sec=2.0)
+            self.get_logger().error(f'gyro read error: {e}', throttle_duration_sec=2.0)
+            return
+        if not gyro or None in gyro:
+            return
+
+        imu_msg = Imu()
+        imu_msg.header.stamp = now
+        imu_msg.header.frame_id = self.frame_id
+        imu_msg.orientation_covariance[0] = -1.0   # orientation 없음(REP-145) — EKF 가 무시
+        imu_msg.angular_velocity.x = float(gyro[0]) * self.gyro_scale
+        imu_msg.angular_velocity.y = float(gyro[1]) * self.gyro_scale
+        imu_msg.angular_velocity.z = float(gyro[2]) * self.gyro_scale
+        imu_msg.angular_velocity_covariance = [
+            0.02, 0.0, 0.0,
+            0.0, 0.02, 0.0,
+            0.0, 0.0, 0.02,
+        ]
+        self.imu_pub.publish(imu_msg)
+
+        # 캘리브레이션은 매 사이클이 아니라 가끔만 읽어 로그(I2C 절약). ~1초마다.
+        self._cal_count = getattr(self, '_cal_count', 0) + 1
+        if self._cal_count >= 25:
+            self._cal_count = 0
+            try:
+                sys_cal, gyro_cal, accel_cal, mag_cal = self.sensor.calibration_status
+                if gyro_cal < 3:
+                    self.get_logger().warn(
+                        f'자이로 캘리브 미완 gyro_cal={gyro_cal}/3 (3 돼야 yaw 정확)',
+                        throttle_duration_sec=10.0)
+            except Exception:
+                pass
 
 
 def main(args=None):

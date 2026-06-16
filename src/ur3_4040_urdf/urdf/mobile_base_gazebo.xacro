@@ -40,8 +40,8 @@
           <horizontal>
             <samples>360</samples>
             <resolution>1</resolution>
-            <min_angle>-2.0</min_angle>
-            <max_angle>2.0</max_angle>
+            <min_angle>-1.4835</min_angle>   <!-- 정면(+x) 기준 ±85°(170°). 실물 /scan 측정값: 정면반구 대체로 열림, 후방(특히 후방-좌측 -105~-180°)이 UR3/프레임에 막힘. "180° 조금 안 됨"에 맞춤 -->
+            <max_angle>1.4835</max_angle>
 
           </horizontal>
         </scan>

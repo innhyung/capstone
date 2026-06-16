@@ -25,6 +25,7 @@ frames_*.pdf
 
 # rosbag 녹화 (용량 큼 — git 제외, 오프라인 SLAM 튜닝용 로컬 데이터)
 mapping_run*/
+bags/
 *.mcap
 *.db3
 

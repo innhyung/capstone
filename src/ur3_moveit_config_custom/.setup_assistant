@@ -1,0 +1,10 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: ur3_control
+    relative_path: urdf/ur3_robot.urdf.xacro
+  srdf:
+    relative_path: config/ur3_control.srdf
+  package_settings:
+    author_name: ""
+    author_email: ""
+    generated_timestamp: 1780662735

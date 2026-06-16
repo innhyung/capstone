@@ -82,9 +82,34 @@ class Monitor(Node):
         except tf2_ros.TransformException:
             return '❌ TF(map→base) 없음 — Nav2/AMCL 활성화 안 됐거나 localize 안 됨'
 
+    def ready(self):
+        """목표를 보내면 실제로 출발할 수 있는 전제조건 점검. 안 갖춰진 항목 리스트 반환(빈 리스트=준비완료).
+        lidar_approach 의 try_start_pending 전제(맵·localize) + 미션에 필요한 센서 + 노드 생존."""
+        missing = []
+        if 'map' not in self.last:
+            missing.append('/map')
+        if self._ok('scan') != '✅':
+            missing.append('/scan')
+        if self._ok('odom') != '✅':
+            missing.append('/odom')
+        try:
+            self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+        except tf2_ros.TransformException:
+            missing.append('위치(localize)')
+        # lidar_approach 가 목표 토픽 구독 중인지 (모니터 자신 1 + lidar_approach = 2 이상)
+        if self.count_subscribers('/target_bottle_position') < 2:
+            missing.append('lidar_approach 노드')
+        return missing
+
     def show(self):
         print('\033[2J\033[H', end='')   # 화면 지우고 맨 위로
         print('╔═══════════════ 미션 모니터 (5초 갱신) ═══════════════')
+        miss = self.ready()
+        if not miss:
+            print('║ 🟢🟢🟢  목표 받을 준비 완료 — 지금 보내세요!  🟢🟢🟢')
+        else:
+            print(f'║ 🔴 준비 중... 아직 대기: {", ".join(miss)}  (다 채워지면 보낼 것)')
+        print('║')
         print(f'║ 로봇 위치(map) : {self.pose()}')
         print('║')
         print(f'║ 센서   : /scan {self._ok("scan")}   /odom {self._ok("odom")}   '
@@ -96,7 +121,6 @@ class Monitor(Node):
         print(f'║ 속도   : {self.val.get("cmd", "— (정지)")}   '
               f'{"🟢 움직임" if moving else "⚪ 정지(목표 대기중이면 정상)"}')
         print('╚══════════════════════════════════════════════════════')
-        print('  (센서 ❌ = 그 토픽 안 들어옴 / 위치 ❌ = localize 문제)')
 
 
 def main():
