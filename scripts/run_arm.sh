@@ -15,4 +15,4 @@ source ~/venv/jazzy/bin/activate
 export ROS_DOMAIN_ID=77    # ★ .bashrc 의 28 을 덮어씀 — 팔과 그 하위(UR/MoveIt/realsense) 전부 77
 echo "[run_arm] ROS_DOMAIN_ID=$ROS_DOMAIN_ID (nav=28 과 분리). 브릿지가 핸드셰이크 중계."
 cd ~/capstone
-python3 arm/pointcloud_all.py
+python3 arm/pointcloud_all_test.py

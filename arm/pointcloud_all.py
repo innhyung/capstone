@@ -200,6 +200,18 @@ class PointCloudRansacTest(Node):
         self.pregrasp_align_timer = None   # 잡기 직전 수평 재정렬 타이머
         self.tracking_mode = False
         self.tracking_done = False
+        # XY 보정 제한시간 — 초과 시 초기자세 복귀 후 재시도 (X 튕겨 Y 수렴 안 될 때 회복)
+        self.tracking_start_time = None
+        self.tracking_timeout = 15.0
+        self.tracking_retry_count = 0
+        self.tracking_retry_max = 3
+        # XY 보정 정체 감지 (2026-06-17): error 가 일정 시간 더 안 가까워지면(제자리 진동:
+        #   129,130,131,130 …) 15s 다 안 기다리고 일찍 초기자세 복귀+재시도.
+        #   123,124,125,126 처럼 계속 수렴 중이면 best 가 갱신돼 타이머 리셋 → 안 걸림.
+        self.xy_best_err = None        # 지금까지 최소 |ex|+|ey| (가장 가까웠던 값)
+        self.xy_best_time = None       # 그 최소값을 마지막으로 갱신한 시각
+        self.xy_stall_timeout = 6.0    # 이만큼 개선 없으면 정체로 판단(s)
+        self.xy_stall_eps = 4          # 이 픽셀 이상 줄어야 '개선'으로 인정(진동 무시)
         self.pixel_tolerance = 20
         self.camera_info_logged = False
         self.cloud_msg = None
@@ -246,7 +258,7 @@ class PointCloudRansacTest(Node):
 
         # 계획 연속 실패 카운터 — N번 실패하면 나쁜 lock 버리고 재획득 (2026-06-16)
         self.plan_fail_count = 0
-        self.plan_fail_limit = 6
+        self.plan_fail_limit = 3   # 6→3 (2026-06-17): 더 빨리 lock 재획득
 
         # 부분 전진 재시도 카운터 — fraction<0.9 면 남은 거리 청크로 재전진 (2026-06-16)
         self.forward_full = True
@@ -378,6 +390,7 @@ class PointCloudRansacTest(Node):
         self.get_logger().warn("초기자세 이동 완료 → grasp 시작 조건 확인")
         self.grasp_path = []           # 새 미션 경로 기록 초기화
         self._record_path("초기자세")    # W0: 복귀 최종 도착점
+        # self.add_base_frame_floor()  # [격리테스트 2026-06-18] 바닥이 GOAL_STATE_INVALID 원인인지 확인차 OFF
         self.try_start_grasp()
 
     def _record_path(self, tag=""):
@@ -911,6 +924,51 @@ class PointCloudRansacTest(Node):
             f"clear_radius={clear_radius:.2f}m"
         )
 
+    def add_base_frame_floor(self):
+        """로봇 본체 프레임에 팔이 걸리는 것 방지용 '바닥 장애물'.
+        베이스축(원점) 정면(+x)으로 FRONT_CUT(9.5cm) 앞은 바닥을 잘라내 → 팔이 앞으로 뻗어
+        물병 잡는 건 허용하고, 그 외(뒤/옆/본체 아래)는 바닥으로 막아 본체에 안 걸리게."""
+        from moveit_msgs.msg import PlanningScene, CollisionObject
+        from geometry_msgs.msg import Pose
+        from shape_msgs.msg import SolidPrimitive
+
+        FRONT_CUT = 0.095   # ★ 팔 뻗는 방향(REACH 축)으로 +9.5cm 앞은 바닥 없음(전진 허용)
+        BACK = 0.60         # 반대쪽(본체 덮는 쪽) 길이
+        HALF = 0.40         # 뻗는 축에 수직인 반폭
+        Z_CENTER = -0.05    # 바닥(본체 닿는 면) 높이 — 실측 맞춰 조정
+        THICK = 0.02
+
+        # ★ (2026-06-17) base_link +X 가 진짜 정면이 아니었음(이전 z90° 회전은 폐기).
+        #   팔이 물병 잡으러 실제 뻗는 방향 = base_link +Y(로봇 왼쪽). 그 방향만 바닥을 열고
+        #   나머지(뒤·옆·본체 아래)는 막는다. 오른쪽(-Y)로 열려면 REACH_SIGN=-1.0 으로만 바꾸면 됨.
+        REACH_SIGN = 1.0    # +1=+Y(왼쪽), -1=-Y(오른쪽)
+
+        length = FRONT_CUT + BACK                        # 뻗는 축(Y) 길이 (0.695)
+        cy = REACH_SIGN * (FRONT_CUT - BACK) / 2.0       # 열린 면이 +FRONT_CUT 에 오게 (-0.2525)
+
+        scene = PlanningScene()
+        scene.is_diff = True
+        obj = CollisionObject()
+        obj.header.frame_id = self.get_robot_base_frame()
+        obj.id = "base_frame_floor"
+        obj.operation = CollisionObject.ADD
+        box = SolidPrimitive()
+        box.type = SolidPrimitive.BOX
+        box.dimensions = [2.0 * HALF, length, THICK]     # X=좌우폭, Y=뻗는축 길이
+        pose = Pose()
+        pose.position.x = 0.0                            # 베이스 중심 정렬(붙임)
+        pose.position.y = float(cy)
+        pose.position.z = float(Z_CENTER)
+        pose.orientation.w = 1.0                         # 회전 없음(축 정렬). 이전 z90° 회전 제거.
+        obj.primitives.append(box)
+        obj.primitive_poses.append(pose)
+        scene.world.collision_objects.append(obj)
+        self.planning_scene_pub.publish(scene)
+        side = "왼쪽(+Y)" if REACH_SIGN > 0 else "오른쪽(-Y)"
+        self.get_logger().warn(
+            f"본체 바닥 장애물 추가: {side}으로 +{FRONT_CUT*100:.1f}cm 앞은 컷, "
+            f"Y[{(cy-length/2):.2f}~{(cy+length/2):.2f}] x±{HALF:.2f} z={Z_CENTER:.2f}")
+
     def align_gripper_y_parallel_to_floor_by_wrist3(self):
         try:
             tf = self.tf_buffer.lookup_transform(
@@ -948,6 +1006,49 @@ class PointCloudRansacTest(Node):
         except Exception as e:
             self.get_logger().warn(f"FLOOR ALIGN 실패: {e}")
 
+    def retry_from_initial(self):
+        """XY 보정 제한시간 초과 → 서보 정지 → 상태 리셋 → 초기자세 복귀 → 재시도(재lock+재접근)."""
+        self.tracking_retry_count += 1
+        # 서보 정지
+        stop = TwistStamped()
+        stop.header.stamp = self.get_clock().now().to_msg()
+        stop.header.frame_id = self.get_robot_base_frame()
+        self.servo_pub.publish(stop)
+
+        if self.tracking_retry_count > self.tracking_retry_max:
+            self.get_logger().error(
+                f"★ XY 보정 재시도 {self.tracking_retry_max}회 초과 → 중단. 물병/자세 점검 필요.")
+            self.tracking_mode = False
+            self.tracking_done = False
+            self.tracking_start_time = None
+            return
+
+        self.get_logger().warn(
+            f"★ XY 보정 {self.tracking_timeout:.0f}s 초과(X튕김 등) → 초기자세 복귀 후 재시도 "
+            f"({self.tracking_retry_count}/{self.tracking_retry_max})")
+
+        # 상태 리셋 (재lock+재접근 하게)
+        self.tracking_mode = False
+        self.tracking_done = False
+        self.tracking_start_time = None
+        self.xy_best_err = None
+        self.xy_best_time = None
+        self.motion_done = False
+        self.goal_active = False
+        self.is_planning = False
+        self.advancing = False
+        self.plan_fail_count = 0
+        self.target_lock_buffer.clear()
+        self.target_locked = False
+        self.locked_bottle_base = None
+        self.latest_bottle_base = None
+
+        # 초기자세 복귀 → 도착하면 try_start_grasp 가 재lock·재접근 시작
+        self.send_initial_joint_pose(self.initial_pose)
+        if hasattr(self, "initial_pose_timer") and self.initial_pose_timer is not None:
+            self.initial_pose_timer.cancel()
+        self.initial_pose_timer = self.create_timer(21.0, self.initial_pose_done_once)
+
     def start_tracking_once(self):
         if self.start_tracking_timer is not None:
             self.start_tracking_timer.cancel()
@@ -961,6 +1062,7 @@ class PointCloudRansacTest(Node):
         self.tracking_mode = True
         self.tracking_done = False
         self.goal_active = False
+        self.tracking_start_time = None   # 서칭 빼고, 실제 XY 보정 시작 때 켜짐(아래 보정 블록)
 
         # 새 전진 시퀀스 시작 → 청크 재전진 카운터 + 전진 목표점 리셋
         self.forward_attempts = 0
@@ -982,6 +1084,8 @@ class PointCloudRansacTest(Node):
 
         self.is_planning = True
         self.last_plan_time = time.time()
+
+        # self.add_base_frame_floor()  # [격리테스트 2026-06-18] 바닥 OFF (위 initial 호출과 함께)
 
         target_pose = PoseStamped()
         target_pose.header.frame_id = self.get_robot_base_frame()
@@ -1052,7 +1156,8 @@ class PointCloudRansacTest(Node):
             _au = look_point - target_pos
             approach_unit = _au / np.linalg.norm(_au)
             _G = look_point - approach_unit * self.grasp_margin
-            _G[2] -= 0.02   # ★ 잡는 점을 물병 중심보다 2cm 아래로 (XY 보정 2cm 내림과 일치, 깊이는 유지)
+            # ★ 잡는 점을 물병 중심보다 아래로 — bed 5cm(2+3), table 2cm (XY 보정 내림과 일치)
+            _G[2] -= 0.05 if self.bed_mode else 0.02
             # ★ 1cm 왼쪽으로 (XY 보정 1cm 왼쪽과 일치). left = cross(up, 접근방향) = 수평 좌측.
             _left = np.cross(np.array([0.0, 0.0, 1.0]), approach_unit)
             _ln = np.linalg.norm(_left)
@@ -2395,6 +2500,13 @@ class PointCloudRansacTest(Node):
             self.show_debug_image(img)
             return
 
+        # ★ XY 보정 제한시간 — 초과 시 초기자세 복귀 후 재시도 (X 튕겨 Y 수렴 안 될 때 회복)
+        if (self.tracking_mode and not self.tracking_done
+                and self.tracking_start_time is not None
+                and time.time() - self.tracking_start_time > self.tracking_timeout):
+            self.retry_from_initial()
+            return
+
         h, w = img.shape[:2]
         # conf 0.25(기본)→0.12 (2026-06-16): 초근접·상단잘림·투명+테이프 물병이 기본 임계값에서
         #   검출 안 돼 트래킹이 멈추던 것. 낮춘 대신 아래서 '가장 큰 bbox(=가까운 타깃)'만 채택.
@@ -2518,10 +2630,16 @@ class PointCloudRansacTest(Node):
 
         # 도착 후 X 보정 모드
         if self.tracking_mode and not self.tracking_done:
+            # ★ 제한시간 타이머는 '서칭 빼고' 여기(물병 찾아 실제 XY 보정 시작)서부터 잰다.
+            if self.tracking_start_time is None:
+                self.tracking_start_time = time.time()
+                self.xy_best_err = None     # 정체 감지 best 초기화
+                self.xy_best_time = None
             # ★ XY 보정이 따라가는 점을 '물병 중심점보다 2cm 아래'로 (하드코딩, 2026-06-16).
             #   → 그리퍼가 중심보다 2cm 낮게 정렬돼 잡음. 뎁스(전진거리)는 안 건드림.
             #   2cm→픽셀 환산: px = fy * 0.02 / Z (Z=bbox중심 물병깊이, cloud 컬러프레임 1:1).
-            down_offset_m = 0.02   # 아래로 2cm
+            # ★ bed 는 5cm(2+3cm 더), table 은 2cm 아래 (2026-06-17)
+            down_offset_m = 0.05 if self.bed_mode else 0.02
             left_offset_m = 0.01   # 왼쪽으로 1cm
             # depth 유효할 때만 갱신 → 무효(NaN)여도 마지막 값 유지(0으로 안 떨어져 진동 방지)
             try:
@@ -2590,6 +2708,21 @@ class PointCloudRansacTest(Node):
                     self.align_gripper_y_to_bottle_axis_by_wrist3()
                 # wrist 회전이 끝난 뒤(2s) 전진
                 self.pregrasp_align_timer = self.create_timer(2.0, self._forward_after_align_once)
+                self.show_debug_image(img)
+                return
+
+            # ★ 정체 감지 (2026-06-17): error 가 계속 0 으로 가까워지면(123,124,125,126…) best 갱신,
+            #   제자리서 진동만 하면(129,130,131,130…) best 안 줄어 xy_stall_timeout 후 초기자세 복귀.
+            cur_err = abs(error_x) + abs(error_y)
+            now = time.time()
+            if self.xy_best_err is None or cur_err < self.xy_best_err - self.xy_stall_eps:
+                self.xy_best_err = cur_err
+                self.xy_best_time = now
+            elif now - self.xy_best_time > self.xy_stall_timeout:
+                self.get_logger().warn(
+                    f"★ XY 보정 정체({self.xy_stall_timeout:.0f}s 동안 |ex|+|ey| {self.xy_best_err}px 밑으로 "
+                    f"안 줄고 진동, 현재={cur_err}px) → 초기자세 복귀 후 재시도")
+                self.retry_from_initial()
                 self.show_debug_image(img)
                 return
 

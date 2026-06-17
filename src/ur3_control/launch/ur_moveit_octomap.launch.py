@@ -69,7 +69,10 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     publish_robot_description_semantic = LaunchConfiguration("publish_robot_description_semantic")
 
-    custom_urdf = "/home/dongbin/vs_ws/src/ur3_control/urdf/ur3_robot.urdf.xacro"
+    # (2026-06-17) 죽은 하드코딩 경로(/home/dongbin/...) → 설치된 ur3_control 패키지에서 이식 가능하게 해결.
+    #   이 경로가 없으면 robot_description 이 비어 move_group 이 GOAL_STATE_INVALID(-27) 를 냄.
+    custom_urdf = os.path.join(
+        get_package_share_directory("ur3_control"), "urdf", "ur3_robot.urdf.xacro")
 
     moveit_config = (
         MoveItConfigsBuilder(robot_name="ur", package_name="ur_moveit_config")

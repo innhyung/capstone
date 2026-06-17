@@ -1,6 +1,20 @@
 ur_manipulator:
-  kinematics_solver: kdl_kinematics_plugin/KDLKinematicsPlugin
-  kinematics_solver_search_resolution: 0.005
-  # 0.005(5ms)→0.05(50ms) (2026-06-17): 5ms는 너무 짧아 KDL이 어려운 자세(침대 등) IK를 못 풀고
-  #   -27 실패 반복(경로생성 4분). 시간을 줘서 풀 확률↑. (해석적 IK 플러그인 미설치라 KDL 유지)
+  # ★ 해석적 대신 pick_ik(gradient/global) 로 교체 (2026-06-18): KDL은 UR에서 느리고 자주 실패해
+  #   경로생성이 오래 걸림. pick_ik 는 빠르고 안정적. ※ ros-jazzy-pick-ik 설치 후에만 launch 할 것!
+  #   (미설치 상태로 move_group 띄우면 플러그인 로드 실패 → KDL 줄로 되돌리기)
+  kinematics_solver: pick_ik/PickIkPlugin
   kinematics_solver_timeout: 0.05
+  kinematics_solver_attempts: 4
+  mode: global
+  position_scale: 1.0
+  rotation_scale: 0.5          # 자세(회전)는 위치보다 덜 엄격 (orientation 허용오차 있으니)
+  position_threshold: 0.001
+  orientation_threshold: 0.01
+  cost_threshold: 0.001
+  minimal_displacement_weight: 0.0
+  gd_step_size: 0.0001
+
+  # --- 폴백(pick_ik 문제 시 이 3줄로 되돌리고 위 블록 지우기) ---
+  # kinematics_solver: kdl_kinematics_plugin/KDLKinematicsPlugin
+  # kinematics_solver_search_resolution: 0.005
+  # kinematics_solver_timeout: 0.05

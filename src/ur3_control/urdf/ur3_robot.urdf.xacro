@@ -2,12 +2,12 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur3_control">
 
   <xacro:arg name="name" default="ur3"/>
-  <xacro:arg name="ur_type" default="ur3"/>
+  <xacro:arg name="ur_type" default="ur3e"/>
   <xacro:arg name="tf_prefix" default=""/>
-  <xacro:arg name="joint_limit_params" default="$(find ur_description)/config/ur3/joint_limits.yaml"/>
-  <xacro:arg name="kinematics_params" default="$(find ur_description)/config/ur3/default_kinematics.yaml"/>
-  <xacro:arg name="physical_params" default="$(find ur_description)/config/ur3/physical_parameters.yaml"/>
-  <xacro:arg name="visual_params" default="$(find ur_description)/config/ur3/visual_parameters.yaml"/>
+  <xacro:arg name="joint_limit_params" default="$(find ur_description)/config/ur3e/joint_limits.yaml"/>
+  <xacro:arg name="kinematics_params" default="$(find ur_description)/config/ur3e/default_kinematics.yaml"/>
+  <xacro:arg name="physical_params" default="$(find ur_description)/config/ur3e/physical_parameters.yaml"/>
+  <xacro:arg name="visual_params" default="$(find ur_description)/config/ur3e/visual_parameters.yaml"/>
 
   <xacro:include filename="$(find ur_description)/urdf/ur.urdf.xacro"/>
 
