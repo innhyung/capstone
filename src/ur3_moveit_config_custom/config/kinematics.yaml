@@ -1,4 +1,6 @@
 ur_manipulator:
   kinematics_solver: kdl_kinematics_plugin/KDLKinematicsPlugin
-  kinematics_solver_search_resolution: 0.0050000000000000001
-  kinematics_solver_timeout: 0.0050000000000000001
+  kinematics_solver_search_resolution: 0.005
+  # 0.005(5ms)→0.05(50ms) (2026-06-17): 5ms는 너무 짧아 KDL이 어려운 자세(침대 등) IK를 못 풀고
+  #   -27 실패 반복(경로생성 4분). 시간을 줘서 풀 확률↑. (해석적 IK 플러그인 미설치라 KDL 유지)
+  kinematics_solver_timeout: 0.05

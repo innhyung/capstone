@@ -44,12 +44,12 @@ import tf2_ros
 from tf2_geometry_msgs import do_transform_pose
 
 BED_INITIAL_POSE = [
-    4.558537006378174,
-    -0.3419717115214844,
-    -1.4476462602615356,
-    -2.2719394169249476,
-    1.6401886940002441,
-    -1.6181018988238733,
+    -1.724648300801412,     # shoulder_pan_joint  ← 360° 시계방향(−2π)
+    -0.3419717115214844,    # shoulder_lift_joint
+    -1.4476462602615356,    # elbow_joint
+    -2.2719394169249476,    # wrist_1_joint
+    1.6401886940002441,     # wrist_2_joint
+    -1.6181018988238733,    # wrist_3_joint
 ]
 
 TABLE_INITIAL_POSE = [
@@ -185,6 +185,13 @@ class PointCloudRansacTest(Node):
         self.search_z_dir = 1.0
         self.search_z_wait_sec = 2.0
         self.search_z_step = 0.05   # 5cm
+
+        # 도착 후 YOLO 미검출 시 그리퍼 Y축(좌우) ±5cm 왕복 서칭
+        self.search_y_busy = False
+        self.search_y_dir = 1.0
+        self.search_y_wait_sec = 1.5
+        self.search_y_step = 0.05   # 중심 기준 ±5cm
+        self.search_y_center = None  # 서칭 중심(도착 TCP) — 첫 호출 시 기록
         self.scene_initialized = False
         self.camera_x_offset_px = -25  # 나중에 잰 값 넣기. 예: +35, -20
         self.advance_done = False
@@ -247,6 +254,7 @@ class PointCloudRansacTest(Node):
         self.forward_attempts_limit = 4
         self.stored_forward_dist = None   # 접근 때 저장하는 전진거리
         self.forward_target_pos = None    # 전진 목표점(한 번만 설정)
+        self.grasp_path = []   # 잡으러 가는 관절경로 웨이포인트(초기→접근→XY→파지) → 역순 복귀용
         self._down_px = 0   # XY 보정 2cm 아래 픽셀(마지막 유효값 유지 — depth 무효 시 진동 방지)
         self._left_px = 0   # XY 보정 1cm 왼쪽 픽셀
 
@@ -368,7 +376,64 @@ class PointCloudRansacTest(Node):
             self.initial_pose_timer = None
 
         self.get_logger().warn("초기자세 이동 완료 → grasp 시작 조건 확인")
+        self.grasp_path = []           # 새 미션 경로 기록 초기화
+        self._record_path("초기자세")    # W0: 복귀 최종 도착점
         self.try_start_grasp()
+
+    def _record_path(self, tag=""):
+        """현재 관절자세를 grasp 경로 웨이포인트로 기록 (역순 복귀용)."""
+        js = self.current_joint_state
+        if js is None:
+            self.get_logger().warn(f"[PATH] 경로점 기록 실패({tag}): joint_state 없음")
+            return
+        order = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+                 "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"]
+        try:
+            pos = dict(zip(js.name, js.position))
+            wp = [float(pos[n]) for n in order]
+        except Exception as e:
+            self.get_logger().warn(f"[PATH] 경로점 기록 실패({tag}): {e}")
+            return
+        self.grasp_path.append(wp)
+        self.get_logger().warn(f"[PATH] 경로점 기록({tag}) → 총 {len(self.grasp_path)}개")
+
+    def return_via_reverse_path(self):
+        """잡으러 간 관절경로(grasp_path)를 역순으로 재생해 복귀. 관절공간이라 Cartesian/IK 한계 안 걸림."""
+        if getattr(self, "return_timer", None) is not None:
+            self.return_timer.cancel()
+            self.return_timer = None
+
+        order = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+                 "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"]
+        path = list(self.grasp_path)
+        if len(path) < 2:
+            self.get_logger().warn(f"[PATH] 기록 경로 {len(path)}개 → 부족, 고정포즈 복귀 폴백")
+            self.return_to_fixed_pose_once()
+            return
+
+        # 현재(마지막=파지자세) 제외, 역순 = [..., XY, 접근, 초기]
+        rev = path[::-1][1:]
+        # ★ 복귀 중 wrist 정렬(FLOOR ALIGN=wrist_3) 빼기: wrist_3 를 파지값으로 고정 → 손목 안 돌고 나머지만 역순.
+        grasp_w3 = path[-1][5]
+        traj = JointTrajectory()
+        traj.joint_names = order
+        t = 0.0
+        for wp in rev:
+            t += 4.0   # 웨이포인트당 4초
+            wp2 = list(wp)
+            wp2[5] = grasp_w3      # wrist_3 정렬 생략(파지 시 손목 유지)
+            p = JointTrajectoryPoint()
+            p.positions = wp2
+            p.time_from_start.sec = int(t)
+            p.time_from_start.nanosec = int((t - int(t)) * 1e9)
+            traj.points.append(p)
+        self.joint_traj_pub.publish(traj)
+
+        self.motion_done = True
+        self.advance_done = True
+        self.get_logger().warn(
+            f"역순 관절경로 복귀 시작: {len(rev)}개 웨이포인트, ~{t:.0f}s (Cartesian 안 씀)")
+        self.shutdown_timer = self.create_timer(t + 2.0, self.shutdown_once)
 
     def try_start_grasp(self):
         if not self.waiting_start:
@@ -720,8 +785,10 @@ class PointCloudRansacTest(Node):
             return
 
         self.get_logger().warn("직선 전진 완료 → gripper close")
+        self._record_path("파지(close)")   # W5: 역순 복귀 시작점
         self.gripper_close()
 
+        # 복귀 전 살짝 상승(물병 책상서 띄움) → 그 다음 기억한 관절경로 역순 복귀
         self.lift_timer = self.create_timer(
             1.0,
             self.lift_then_return_once
@@ -899,6 +966,9 @@ class PointCloudRansacTest(Node):
         self.forward_attempts = 0
         self.forward_full = True
         self.forward_target_pos = None
+        # Y(좌우) 서칭 중심 리셋 → 이번 도착 위치 기준으로 ±5cm
+        self.search_y_center = None
+        self.search_y_dir = 1.0
 
         self.get_logger().warn("WRIST 완료 → YOLO X 보정 시작")
 
@@ -936,13 +1006,13 @@ class PointCloudRansacTest(Node):
             look_point = p_bottle.copy()
 
             if self.bed_mode:
+                # ★ bed (2026-06-17): 침대 물병은 낮아서 -4.5cm 더 내리면 z≈0.077 → UR3 reach 밖
+                #   → MoveGroup error_code=-27 무한 실패(재획득 루프)였음. 4.5cm 보정 빼고 5cm 바닥 유지.
                 look_point[2] = max(look_point[2] + 0.01, 0.05)
             else:
+                # table: 검출 중심 Z가 위로 치우쳐 도착이 4.5cm 높던 것 보정.
                 look_point[2] += 0.01
-
-            # ★ 도착이 꾸준히 물병보다 4.5cm 높게 잡히는 것 보정 (하드코딩, 2026-06-16).
-            #   검출 중심 Z가 위로 치우쳐서 → standoff·G 둘 다 4.5cm 내림.
-            look_point[2] -= 0.045
+                look_point[2] -= 0.045
 
             # 수평 접근이면 XY 방향만 사용해서 접근점 생성
             approach_xy = look_point[:2] - p_tcp[:2]
@@ -1044,7 +1114,7 @@ class PointCloudRansacTest(Node):
         request = MotionPlanRequest()
         request.group_name = "ur_manipulator"
         request.num_planning_attempts = 1
-        request.allowed_planning_time = 1.5
+        request.allowed_planning_time = 1.5   # 3.0→1.5 복귀: 실패 케이스에서 3s씩 낭비 → 빠른 실패가 나음(근본은 타겟 높이 수정)
         request.max_velocity_scaling_factor = 0.15      # 0.03→0.15 (2026-06-17): 3% 실행이 너무 느림 → 5배
         request.max_acceleration_scaling_factor = 0.15  # 0.03→0.15
         request.planner_id = "RRTConnectkConfigDefault"
@@ -1068,12 +1138,14 @@ class PointCloudRansacTest(Node):
         ori_constraint.link_name = "gripper_tcp"
         ori_constraint.orientation = target_pose.pose.orientation
 
-        # X/Y는 어느 정도 맞추고, Z축 회전(yaw)은 자유롭게
+        # X/Y는 접근축이 물병 향하게 조이고, Z축 회전(yaw)은 자유롭게.
+        # bed는 중간값 (2026-06-17): 0.5rad·1.0(table) 로 조였더니 목표영역이 좁아 계획이 느려짐(재시도 반복).
+        #   1.5rad(86°,안바라봄) ↔ 0.5rad(느림) 절충 = 0.8rad(~46°)·weight0.6 → 충분히 바라보며 더 빨리 풂.
         if self.bed_mode:
-            ori_constraint.absolute_x_axis_tolerance = 1.5
-            ori_constraint.absolute_y_axis_tolerance = 1.5
+            ori_constraint.absolute_x_axis_tolerance = 0.8
+            ori_constraint.absolute_y_axis_tolerance = 0.8
             ori_constraint.absolute_z_axis_tolerance = 3.14
-            ori_constraint.weight = 0.2
+            ori_constraint.weight = 0.6
         else:
             ori_constraint.absolute_x_axis_tolerance = 0.5
             ori_constraint.absolute_y_axis_tolerance = 0.5
@@ -1259,6 +1331,7 @@ class PointCloudRansacTest(Node):
             if error_code == 1:
                 self.plan_fail_count = 0
                 self.get_logger().info("MoveGroup motion success")
+                self._record_path("접근(standoff)")   # W1
 
                 if self.latest_bottle_pose_type == "standing":
                     self.get_logger().warn("STANDING BOTTLE -> FLOOR ALIGN")
@@ -1676,8 +1749,8 @@ class PointCloudRansacTest(Node):
         self.update_gripper_tcp_position()
 
         if self.current_tcp_pos is None:
-            self.get_logger().warn("lift 실패: current_tcp_pos 없음 → 리프트 건너뛰고 복귀")
-            self.return_to_fixed_pose_once()
+            self.get_logger().warn("lift 실패: current_tcp_pos 없음 → 리프트 건너뛰고 역순복귀")
+            self.return_via_reverse_path()
             return
 
         try:
@@ -1701,13 +1774,13 @@ class PointCloudRansacTest(Node):
             self.send_lift_cartesian_path(target_pose)
 
         except Exception as e:
-            self.get_logger().warn(f"lift pose 실패: {e} → 복귀로 진행")
-            self.return_to_fixed_pose_once()
+            self.get_logger().warn(f"lift pose 실패: {e} → 역순복귀로 진행")
+            self.return_via_reverse_path()
 
     def send_lift_cartesian_path(self, target_pose):
         if not self.cartesian_client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().warn("compute_cartesian_path service 없음 → 리프트 건너뛰고 복귀")
-            self.return_to_fixed_pose_once()
+            self.get_logger().warn("compute_cartesian_path service 없음 → 리프트 건너뛰고 역순복귀")
+            self.return_via_reverse_path()
             return
 
         req = GetCartesianPath.Request()
@@ -1734,8 +1807,8 @@ class PointCloudRansacTest(Node):
 
             if res.fraction < 0.9:
                 self.get_logger().warn(
-                    f"lift Cartesian 실패: fraction={res.fraction:.2f} → 리프트 건너뛰고 복귀")
-                self.return_to_fixed_pose_once()
+                    f"lift Cartesian 실패: fraction={res.fraction:.2f} → 리프트 건너뛰고 역순복귀")
+                self.return_via_reverse_path()
                 return
 
             traj = res.solution.joint_trajectory
@@ -1763,14 +1836,14 @@ class PointCloudRansacTest(Node):
 
             self.return_timer = self.create_timer(
                 done_time,
-                self.return_to_fixed_pose_once
+                self.return_via_reverse_path
             )
 
-            self.get_logger().warn("lift Cartesian 실행 → 완료 후 return")
+            self.get_logger().warn("lift Cartesian 실행(5cm 상승) → 완료 후 역순복귀")
 
         except Exception as e:
-            self.get_logger().warn(f"lift Cartesian error: {e} → 복귀로 진행")
-            self.return_to_fixed_pose_once()
+            self.get_logger().warn(f"lift Cartesian error: {e} → 역순복귀로 진행")
+            self.return_via_reverse_path()
 
     def return_to_fixed_pose_once(self):
         if hasattr(self, "return_timer") and self.return_timer is not None:
@@ -1787,12 +1860,12 @@ class PointCloudRansacTest(Node):
         ]
 
         return_pose = [
-            -1.570768181477682,
-            -0.34057851255450444,
-            -1.1151612997055054,
-            -2.15763582805776,
-            1.5708417892456055,
-            -1.5707686583148401
+            -1.7247479597674769,
+            -0.44919128835711675,
+            1.1500924825668335,
+            -1.6262246570982875,
+            1.5606213808059692,
+            -1.583463493977682
         ]
 
         traj = JointTrajectory()
@@ -2182,6 +2255,108 @@ class PointCloudRansacTest(Node):
 
         self.get_logger().warn("Z SEARCH 대기 완료 → 다음 방향 준비")
 
+    # ---------- 도착 후 좌우(그리퍼 Y축) 서칭 — YOLO 미검출 시 ±5cm 왕복 ----------
+    def search_y_motion(self):
+        if self.advancing or self.is_planning or self.goal_active:
+            return
+        if self.search_y_busy:
+            return
+        now = time.time()
+        if hasattr(self, "last_search_y_time") and now - self.last_search_y_time < 3.0:
+            return
+        self.search_y_busy = True
+        self.last_search_y_time = now
+
+        self.update_gripper_tcp_position()
+        if self.current_tcp_pos is None:
+            self.get_logger().warn("Y SEARCH 실패: current_tcp_pos 없음")
+            self.search_y_busy = False
+            return
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.base_frame, self.gripper_frame,
+                rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.2))
+            q = tf.transform.rotation
+            R = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+            y_axis = R[:, 1]   # 그리퍼 TCP Y축(죠 벌어지는 방향=좌우)
+
+            if self.search_y_center is None:   # 서칭 중심 = 도착 위치(한 번만)
+                self.search_y_center = np.array(self.current_tcp_pos, dtype=np.float64)
+
+            dy = self.search_y_step * self.search_y_dir   # 중심 기준 ±5cm
+            target = self.search_y_center + y_axis * dy
+
+            target_pose = PoseStamped()
+            target_pose.header.frame_id = self.base_frame
+            target_pose.header.stamp = self.get_clock().now().to_msg()
+            target_pose.pose.position.x = float(target[0])
+            target_pose.pose.position.y = float(target[1])
+            target_pose.pose.position.z = float(target[2])
+            target_pose.pose.orientation = tf.transform.rotation
+
+            self.get_logger().warn(
+                f"YOLO Y SEARCH(좌우): dy={dy*100:+.0f}cm (중심기준 ±{self.search_y_step*100:.0f}cm)")
+            self.send_search_y_cartesian_path(target_pose)
+        except Exception as e:
+            self.get_logger().warn(f"Y SEARCH 실패: {e}")
+            self.search_y_busy = False
+
+    def send_search_y_cartesian_path(self, target_pose):
+        if not self.cartesian_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn("compute_cartesian_path service 없음")
+            self.search_y_busy = False
+            return
+        req = GetCartesianPath.Request()
+        req.header.frame_id = self.base_frame
+        req.group_name = "ur_manipulator"
+        req.link_name = self.gripper_frame
+        if self.current_joint_state is not None:
+            req.start_state = RobotState()
+            req.start_state.joint_state = self.current_joint_state
+            req.start_state.is_diff = False
+        req.waypoints.append(target_pose.pose)
+        req.max_step = 0.01
+        req.jump_threshold = 0.0
+        req.avoid_collisions = False
+        future = self.cartesian_client.call_async(req)
+        future.add_done_callback(self.search_y_cartesian_callback)
+
+    def search_y_cartesian_callback(self, future):
+        try:
+            res = future.result()
+            if res.fraction < 0.8:
+                self.get_logger().warn(f"Y SEARCH Cartesian 실패: fraction={res.fraction:.2f}")
+                self.search_y_busy = False
+                return
+            traj = res.solution.joint_trajectory
+            traj.header.stamp = self.get_clock().now().to_msg()
+            speed_scale = 10.0
+            for p in traj.points:
+                p.velocities = []
+                p.accelerations = []
+                p.effort = []
+                total_ns = int((p.time_from_start.sec * 1_000_000_000
+                                + p.time_from_start.nanosec) * speed_scale)
+                p.time_from_start.sec = total_ns // 1_000_000_000
+                p.time_from_start.nanosec = total_ns % 1_000_000_000
+            self.joint_traj_pub.publish(traj)
+            last_t = traj.points[-1].time_from_start
+            move_time = last_t.sec + last_t.nanosec * 1e-9
+            self.get_logger().warn("Y SEARCH Cartesian 실행 → 이동 후 대기")
+            self.search_y_timer = self.create_timer(
+                move_time + self.search_y_wait_sec, self.finish_search_y_once)
+        except Exception as e:
+            self.get_logger().warn(f"Y SEARCH Cartesian error: {e}")
+            self.search_y_busy = False
+
+    def finish_search_y_once(self):
+        if hasattr(self, "search_y_timer") and self.search_y_timer is not None:
+            self.search_y_timer.cancel()
+            self.search_y_timer = None
+        self.search_y_dir *= -1.0   # 다음엔 반대쪽(좌우 왕복)
+        self.search_y_busy = False
+        self.get_logger().warn("Y SEARCH 대기 완료 → 반대쪽 준비")
+
     def show_debug_image(self, img):
         
         if not self.show_visualization:
@@ -2223,7 +2398,9 @@ class PointCloudRansacTest(Node):
         h, w = img.shape[:2]
         # conf 0.25(기본)→0.12 (2026-06-16): 초근접·상단잘림·투명+테이프 물병이 기본 임계값에서
         #   검출 안 돼 트래킹이 멈추던 것. 낮춘 대신 아래서 '가장 큰 bbox(=가까운 타깃)'만 채택.
+        _t_yolo = time.time()
         results = self.model(img, conf=0.06, verbose=False)   # 0.12→0.06 (2026-06-17): 은박테이프+노출로 conf 낮아 미검출 → 더 낮춤
+        self._dt_yolo = time.time() - _t_yolo   # 타이밍 진단
         found = False
         x1 = y1 = x2 = y2 = 0
 
@@ -2285,6 +2462,9 @@ class PointCloudRansacTest(Node):
                     (0, 0, 255),
                     2
                 )
+                # ★ 도착 후 XY 보정 단계인데 YOLO 미검출 → 그리퍼 Y축 좌우 ±5cm 서칭 (Z서칭 방식)
+                if self.tracking_mode and not self.tracking_done:
+                    self.search_y_motion()
                 self.show_debug_image(img)
                 return
 
@@ -2400,6 +2580,8 @@ class PointCloudRansacTest(Node):
                 self.tracking_done = True
                 self.tracking_mode = False
 
+                self._record_path("XY보정 완료")   # W3
+
                 # 잡기 직전 한 번 더 수평 정렬 — XY 보정(shoulder jog) 중 기울어진 그리퍼 복구 (2026-06-16)
                 self.get_logger().warn("XY 보정 완료 → 수평 재정렬 후 전진")
                 if self.latest_bottle_pose_type == "standing":
@@ -2431,8 +2613,10 @@ class PointCloudRansacTest(Node):
             self.show_debug_image(img)
             return
 
+        _t_plane = time.time()
         table_pts = self.read_table_points_ordered(current_cloud, w, h, step=4)
         plane_model, table_inliers = self.detect_table_plane(table_pts)
+        self._dt_plane = time.time() - _t_plane   # 타이밍 진단(평면 RANSAC)
         
         if table_inliers is not None:
             table_inliers_base_viz = self.transform_points_to_base(
@@ -2542,10 +2726,17 @@ class PointCloudRansacTest(Node):
 
 
         
+        _t_cl = time.time()
         cluster_pts, bottle_info = self.extract_bottle_cluster(
             bottle_pts,
             plane_model
         )
+        _dt_cl = time.time() - _t_cl
+        self.get_logger().warn(
+            f"[TIMING] yolo={getattr(self,'_dt_yolo',0)*1000:.0f}ms "
+            f"plane={getattr(self,'_dt_plane',0)*1000:.0f}ms "
+            f"cluster={_dt_cl*1000:.0f}ms",
+            throttle_duration_sec=1.0)
 
         if bottle_info is None:
             self.get_logger().warn(

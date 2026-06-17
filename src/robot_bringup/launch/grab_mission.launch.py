@@ -15,7 +15,7 @@ navigation.launch.py (실물 브링업 + Nav2 + RViz) 를 통째로 포함하고
   # 또는 RViz 의 "Publish Point" 툴로 클릭
 
 동작: 목표 받으면 → [1단계] Nav2 가 벽 피해 물건 근처 staging 까지 이동 →
-      [2단계] 라이다 보며 전진, 앞 stop_distance(기본 0.40m) 에서 정지 → 팔로 잡기.
+      [2단계] 라이다 보며 전진, 앞 stop_distance(기본 0.20m) 에서 정지 → 팔로 잡기.
 
 전제·주의:
   - 초기위치는 nav2_params.yaml 의 amcl set_initial_pose — 로봇 놓는 자리에 맞게 수정할 것.
@@ -58,9 +58,11 @@ def generate_launch_description():
     declare_skip_rpi = DeclareLaunchArgument(
         'skip_rpi', default_value='false', description='true 면 라파 SSH 건너뜀.')
     declare_stop = DeclareLaunchArgument(
-        'stop_distance', default_value='0.40',
+        'stop_distance', default_value='0.20',
         description='[개방공간 모드] 라이다 정지 거리(m) — 앞 물체 이 거리에서 정지. '
-                    'footprint 앞길이 0.325m 보다 커야 안 들이받음(하한 ~0.35). 0.40=책상까지 7.5cm 여유.')
+                    'lidar_link 가 프레임 맨앞(x=0.325, 프레임보다 돌출)이라 이 값은 거의 "앞범퍼↔벽" 거리. '
+                    '0.40→0.35→0.20 (2026-06-17): 복귀를 retrace(왔던길)로 해 충돌위험↓ + 팔 reach 가깝게. '
+                    '물체가 팔베이스서 ~0.325m(0.2+0.125)라 UR3 reach 안.')
     declare_standoff = DeclareLaunchArgument(
         'standoff', default_value='0.50',
         description='[책상/벽 수직접근 모드] 책상 앞면~로봇 중심 정지거리(m). 맵으로 멈춰서 실물 오차 흡수 위해 여유 두기(0.6~0.7). 너무 가까우면 키울 것.')

@@ -118,12 +118,12 @@ def generate_launch_description():
 
     # 7) lidar_approach (Nav2 뜬 뒤 18초) — 시뮬도 grab_mission 처럼 한 런치에 포함.
     #    시뮬이라 use_sim_time:=true 필수.
-    #    파라미터를 실물 grab_mission 과 동일하게 맞춤(stop_distance 0.40, back_away 0.55).
+    #    파라미터를 실물 grab_mission 과 동일하게 맞춤(stop_distance 0.20, back_away 0.55).
     #    나머지(standoff 0.50·wall_scan_radius 0.55·pause_sec 1.5·approach_run 0.30)는 노드 기본값이 이미 실물과 같음.
     approach = TimerAction(period=18.0, actions=[ExecuteProcess(
         cmd=['python3', '/home/min/capstone/scripts/lidar_approach.py',
              '--ros-args', '-p', 'use_sim_time:=true',
-             '-p', 'stop_distance:=0.40', '-p', 'back_away_dist:=0.55'],
+             '-p', 'stop_distance:=0.20', '-p', 'back_away_dist:=0.55'],
         output='screen', name='lidar_approach')])
 
     return LaunchDescription([

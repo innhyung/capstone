@@ -42,7 +42,7 @@ amcl:
     scan_topic: scan
     set_initial_pose: true
     initial_pose:
-      x: 0.0
+      x: -0.13           # 0.0→-0.13 (2026-06-17): 시작위치 13cm 뒤로(yaw0=+x바라봄→뒤는 -x). 로봇도 그만큼 뒤에 놓을 것.
       y: 0.0
       z: 0.0
       yaw: 0.0           # 새 맵(clean_0611) 원점 = 매핑 시작점·방향. 로봇을 그 자리에 놓고 시작.

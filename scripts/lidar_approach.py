@@ -429,12 +429,18 @@ class LidarApproach(Node):
                 f'(Nav2 가 목표를 못 갔거나 목표가 다시 발행됨) 목표 다시 주거나 Nav2 확인.')
             self.state = 'IDLE'
             return
-        # 수직모드든 개방공간이든 동일하게 반응형 전진 접근.
-        # 수직성은 staging 위치(벽 법선 위)로 이미 보장됨 → 거기서 목표 향해 직진하면 법선 따라가 수직 유지.
-        # ★ 제자리 회전(ALIGNING)은 코앞 회전 시 AMCL 흔들려 프레임 멈춤/발산 유발 → 안 씀.
-        self.state = 'APPROACHING'
+        # ★ 재활성 (2026-06-17): 수직(perp)모드는 staging(물체 ~standoff 0.5m 앞, 코앞 아님)에서
+        #   '라이브 라이다 스캔'으로 진짜 앞 벽에 수직이 되게 ALIGNING(제자리 정렬, AMCL 무관) → PAUSING → 직진.
+        #   기존 APPROACHING은 perp에서 goal_yaw(맵/AMCL)로 맞춰 좁은FOV aperture 헤딩오차만큼 안 수직이던 것
+        #   (특히 회전량 큰 침대에서 한바퀴 돌고도 수직 안 됨) 해결. 개방공간은 벽 없으니 기존 APPROACHING 유지.
         mode = '수직(법선 위에서 정면 전진)' if self.perp_mode else '개방공간'
-        self.get_logger().info(f'[2단계] staging 도착({mode}) → 라이다 보며 {self.stop_dist}m 까지 전진')
+        if self.perp_mode:
+            self.align_t0 = self.get_clock().now().nanoseconds / 1e9
+            self.state = 'ALIGNING'
+            self.get_logger().info(f'[2단계] staging 도착({mode}) → 라이다 수직정렬 후 {self.stop_dist}m 직진')
+        else:
+            self.state = 'APPROACHING'
+            self.get_logger().info(f'[2단계] staging 도착({mode}) → 라이다 보며 {self.stop_dist}m 까지 전진')
 
     # ---------- 파지 완료 → 초기 위치 복귀 ----------
     def on_grasp(self, msg):
