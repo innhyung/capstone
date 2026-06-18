@@ -52,6 +52,27 @@ BED_INITIAL_POSE = [
     -1.6181018988238733,    # wrist_3_joint
 ]
 
+# bed 모드 타겟 포지션 (티칭으로 획득한 관절값)
+BED_JOINTS_RIGHT = [
+    -1.8996618429767054, -2.3643328152098597, -2.376713514328003,
+     1.130692644710205,   1.6561652421951294, -1.6537192503558558,
+]
+BED_JOINTS_CENTER = [
+    -1.3905718962298792, -2.3727251491942347, -2.582812547683716,
+     1.2316748338886718,  1.6179234981536865, -1.7167838255511683,
+]
+BED_JOINTS_LEFT = [
+    -0.8094590345965784, -3.016862531701559,  -1.5854140520095825,
+     1.3220578867145996,  1.6306769847869873, -1.608518425618307,
+]
+
+# 로봇 베이스 기준 Y 좌표 임계값 (m): Y > 임계 → 왼쪽, Y < -임계 → 오른쪽
+BED_REGION_Y_THRESHOLD = 0.10
+
+# ★ 화면 3분할 경계를 왼쪽으로 이동(px). 양수=왼쪽으로. ~1cm@0.5m ≈ 9px (fx≈428).
+#   분할선 시각화가 켜져 있으니 보면서 값 조정. (4cm + 5cm 더 = 9cm ≈ 81px)
+BED_SPLIT_SHIFT_PX = 81
+
 TABLE_INITIAL_POSE = [
     -1.570768181477682,
     -0.34057851255450444,
@@ -202,7 +223,7 @@ class PointCloudRansacTest(Node):
         self.tracking_done = False
         # XY 보정 제한시간 — 초과 시 초기자세 복귀 후 재시도 (X 튕겨 Y 수렴 안 될 때 회복)
         self.tracking_start_time = None
-        self.tracking_timeout = 15.0
+        self.tracking_timeout = 60.0   # 15→60 (2026-06-18 요청): XY보정 시간 더 늘림(섣부른 재계획 방지)
         self.tracking_retry_count = 0
         self.tracking_retry_max = 3
         # XY 보정 정체 감지 (2026-06-17): error 가 일정 시간 더 안 가까워지면(제자리 진동:
@@ -210,7 +231,7 @@ class PointCloudRansacTest(Node):
         #   123,124,125,126 처럼 계속 수렴 중이면 best 가 갱신돼 타이머 리셋 → 안 걸림.
         self.xy_best_err = None        # 지금까지 최소 |ex|+|ey| (가장 가까웠던 값)
         self.xy_best_time = None       # 그 최소값을 마지막으로 갱신한 시각
-        self.xy_stall_timeout = 6.0    # 이만큼 개선 없으면 정체로 판단(s)
+        self.xy_stall_timeout = 20.0   # 6→20 (2026-06-18 요청): 정체 판정도 더 길게(섣부른 재시도 방지)
         self.xy_stall_eps = 4          # 이 픽셀 이상 줄어야 '개선'으로 인정(진동 무시)
         self.pixel_tolerance = 20
         self.camera_info_logged = False
@@ -263,7 +284,7 @@ class PointCloudRansacTest(Node):
         # 부분 전진 재시도 카운터 — fraction<0.9 면 남은 거리 청크로 재전진 (2026-06-16)
         self.forward_full = True
         self.forward_attempts = 0
-        self.forward_attempts_limit = 4
+        self.forward_attempts_limit = 15   # fraction 무시 모드: 부분전진 여러번 청크로 기어감 (4→15)
         self.stored_forward_dist = None   # 접근 때 저장하는 전진거리
         self.forward_target_pos = None    # 전진 목표점(한 번만 설정)
         self.grasp_path = []   # 잡으러 가는 관절경로 웨이포인트(초기→접근→XY→파지) → 역순 복귀용
@@ -491,6 +512,10 @@ class PointCloudRansacTest(Node):
             self.target_locked = False
             self.locked_bottle_base = None
             self.target_ever_locked = False
+            self._bed_med_buffer = []          # 베드 중앙값 버퍼 초기화
+            self.bed_standoff_tcp = None       # 티칭 standoff 도착 TCP 초기화
+            self.bed_forward_dist = None       # 도착시점 확정 전진거리 초기화
+            self.last_forward_dist_cm = None   # 화면표시 전진거리 초기화
 
             self.motion_done = False
             self.tracking_mode = False
@@ -722,12 +747,14 @@ class PointCloudRansacTest(Node):
         try:
             res = future.result()
 
-            # 0.9 미만이어도 0.5 이상이면 부분 경로라도 전진(데드락 방지).
-            # 0.5 미만이면 정말 못 가는 것 → 조용히 죽지 말고 크게 로그.
-            if res.fraction < 0.5:
+            # ★ fraction 무시 모드 (2026-06-18 사용자 요청): 부분 궤적이라도 무조건 실행하고
+            #   그 지점에서 재전진 반복 → 그리퍼 방향으로 조금씩 기어감. 거리가 줄면 마지막 짧은
+            #   청크는 fraction≥0.9 로 완전히 풀려 그립으로 넘어감.
+            #   fraction 이 거의 0(1cm도 못 감)일 때만 중단 — 그건 정말 못 가는 특이점.
+            if res.fraction < 0.02:
                 self.get_logger().error(
-                    f"★ 전진 실패(데드락): Cartesian fraction={res.fraction:.2f} < 0.5 "
-                    f"→ 경로 거의 못 품. 물병이 reach 밖이거나 충돌/타깃 좌표 이상 의심."
+                    f"★ 전진 실패: Cartesian fraction={res.fraction:.2f} ≈ 0 "
+                    f"→ 1cm도 직선이동 불가(특이점). 그리퍼 방향으로도 못 감."
                 )
                 self.advancing = False
                 return
@@ -1042,6 +1069,16 @@ class PointCloudRansacTest(Node):
         self.target_locked = False
         self.locked_bottle_base = None
         self.latest_bottle_base = None
+        self._bed_med_buffer = []          # 재접근 시 홈에서 중앙값 다시 수집
+        self.bed_standoff_tcp = None
+        self.bed_forward_dist = None
+
+        # bed 접근 타이머 정리
+        for attr in ('_bed_wait_timer', '_bed_arrive_timer'):
+            t = getattr(self, attr, None)
+            if t is not None:
+                t.cancel()
+                setattr(self, attr, None)
 
         # 초기자세 복귀 → 도착하면 try_start_grasp 가 재lock·재접근 시작
         self.send_initial_joint_pose(self.initial_pose)
@@ -1074,6 +1111,102 @@ class PointCloudRansacTest(Node):
 
         self.get_logger().warn("WRIST 완료 → YOLO X 보정 시작")
 
+
+    # ─── bed 모드 전용: 티칭 관절값으로 직접 접근 ───────────────────────────
+    def send_bed_approach_goal(self, bottle_base):
+        """bed 모드: MoveGroup 대신 티칭 관절값(scaled_controller)으로 접근.
+        흐름: 5초 대기 → 타겟 관절값 이동(8초) → start_tracking_once()
+        """
+        if self.is_planning:
+            return
+
+        self.is_planning = True
+        self.last_plan_time = time.time()
+
+        # 전진/파지에 필요한 물병 좌표 보존 (MoveGroup 없이도 forward 단계가 작동)
+        look_point = np.array([bottle_base[0], bottle_base[1], bottle_base[2]], dtype=np.float64)
+        look_point[2] = max(look_point[2] + 0.01, 0.05)
+        self.last_bottle_center_for_forward = look_point.copy()
+        self.last_approach_target_pos = look_point.copy()
+        self.grasp_target_point = look_point.tolist()
+
+        # ★ 왼/중/우 구역 결정 = 화면 3분할 (YOLO bbox 중심 X). depth(base Y) 안 씀.
+        #   이미지 왼쪽 1/3 → 왼쪽, 오른쪽 1/3 → 오른쪽, 가운데 1/3 → 중앙. (시각화 X)
+        cx = getattr(self, "last_bottle_cx", None)
+        iw = getattr(self, "last_img_w", None)
+        if cx is not None and iw:
+            left_b = iw / 3.0 - BED_SPLIT_SHIFT_PX
+            right_b = iw * 2.0 / 3.0 - BED_SPLIT_SHIFT_PX
+            if cx < left_b:
+                region = "왼쪽"
+                self._bed_target_joints = BED_JOINTS_LEFT
+            elif cx > right_b:
+                region = "오른쪽"
+                self._bed_target_joints = BED_JOINTS_RIGHT
+            else:
+                region = "중앙"
+                self._bed_target_joints = BED_JOINTS_CENTER
+            self.get_logger().warn(
+                f"[BED] 화면3분할 cx={cx}/{iw} (경계 {left_b:.0f}/{right_b:.0f}) "
+                f"→ {region} 타겟 선택. 5초 대기 중...")
+        else:
+            # 폴백: bbox 픽셀 없으면 base-frame Y 로
+            bottle_y = float(bottle_base[1])
+            if bottle_y > BED_REGION_Y_THRESHOLD:
+                region = "오른쪽"
+                self._bed_target_joints = BED_JOINTS_RIGHT
+            elif bottle_y < -BED_REGION_Y_THRESHOLD:
+                region = "왼쪽"
+                self._bed_target_joints = BED_JOINTS_LEFT
+            else:
+                region = "중앙"
+                self._bed_target_joints = BED_JOINTS_CENTER
+            self.get_logger().warn(
+                f"[BED] (bbox 없음) 물병 Y={bottle_y:.3f}m → {region} 타겟 선택. 5초 대기 중...")
+
+        # 기존 타이머 정리
+        for attr in ('_bed_wait_timer', '_bed_arrive_timer'):
+            t = getattr(self, attr, None)
+            if t is not None:
+                t.cancel()
+                setattr(self, attr, None)
+
+        self._bed_wait_timer = self.create_timer(5.0, self._bed_wait_timer_cb)
+
+    def _bed_wait_timer_cb(self):
+        """5초 대기 완료 → 타겟 관절값으로 이동 발행."""
+        self._bed_wait_timer.cancel()
+        self._bed_wait_timer = None
+
+        joints = self._bed_target_joints
+        order = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+                 "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"]
+        traj = JointTrajectory()
+        traj.joint_names = order
+        pt = JointTrajectoryPoint()
+        pt.positions = joints
+        pt.time_from_start.sec = 8
+        pt.time_from_start.nanosec = 0
+        traj.points.append(pt)
+        self.joint_traj_pub.publish(traj)
+
+        self.get_logger().warn("[BED] 타겟으로 이동 발행 (8초). 도착 후 XY 보정 시작...")
+        # 8초 이동 + 1초 여유
+        self._bed_arrive_timer = self.create_timer(9.0, self._bed_arrive_timer_cb)
+
+    def _bed_arrive_timer_cb(self):
+        """이동 완료 → 경로 기록 후 XY 보정 시작.
+        전진거리는 여기서 안 구함 — XY 보정+그리퍼 정렬이 끝난 뒤(전진 직전) 실제 TCP 로 계산해야
+        보정으로 움직인 분이 반영돼 더 정확. (send_forward_to_bottle_15cm 에서 계산)"""
+        self._bed_arrive_timer.cancel()
+        self._bed_arrive_timer = None
+
+        self._record_path("bed_타겟도착")
+        self.is_planning = False
+        self.get_logger().warn("[BED] 타겟 도착 → XY 보정(tracking) 시작")
+        self.start_tracking_once()
+
+    # ────────────────────────────────────────────────────────────────────────
 
     def send_move_group_goal(self, bottle_base):
         self.get_logger().warn("ENTER send_move_group_goal")
@@ -1126,7 +1259,7 @@ class PointCloudRansacTest(Node):
             else:
                 approach_xy = approach_xy / np.linalg.norm(approach_xy)
 
-            offset_distance = 0.09   # standoff = 물병중심 9cm 앞 (0.07→0.09, +2cm 2026-06-17). 여기 도착→정렬·보정→직진해 잡음.
+            offset_distance = 0.10   # standoff = 물병중심 10cm 앞 (0.09→0.10 2026-06-18). 여기 도착→정렬·보정→직진해 잡음.
 
             target_pos = np.array([
                 look_point[0] - approach_xy[0] * offset_distance,
@@ -1382,7 +1515,7 @@ class PointCloudRansacTest(Node):
         x_step = 0.006   # 0.009→0.006 복귀 (2026-06-17): 큰 step이 경계서 오버슈트→좌우 진동. 수렴은 <= 가 처리.
         # Y(shoulder_lift)는 팔 전체 무게를 들어 토크가 커서 같은 step이면 보호모드(protective stop)에 걸림.
         # → step 절반(0.003)으로 줄이고 아래에서 트래젝토리 시간도 늘려 속도/토크↓ (2026-06-16)
-        y_step = 0.006   # 0.003→0.006 (2026-06-16): Y 보정 속도↑ (요청). 보호모드 걸리면 다시 낮추기.
+        y_step = 0.009   # 0.006→0.009 (2026-06-18 요청): Y 보정 속도 더↑. 보호모드 걸리면 0.008/0.007 로 낮추기.
 
         # 화면 좌우 보정
         if abs(error_x) >= self.pixel_tolerance:
@@ -1527,7 +1660,27 @@ class PointCloudRansacTest(Node):
         )
 
         return self.locked_bottle_base
-        
+
+    def bed_median_target(self, bottle_base):
+        """베드 모드 홈 좌표 굳히기: N프레임 모아 축별 중앙값(median) 반환.
+        - spread 거부 없음 → lock 처럼 무한 재수집(데드락) 안 함.
+        - median 이라 단일 프레임 노이즈/튐값에 강함.
+        - N프레임 안 차면 None(대기). 차면 매 프레임 최근 N개의 median.
+        ★ 베드 접근은 이 값(홈 자세·depth 정상)으로 grasp_target_point 를 굳혀서 전진에 씀.
+        """
+        N = 5
+        if not hasattr(self, "_bed_med_buffer"):
+            self._bed_med_buffer = []
+        self._bed_med_buffer.append(np.array(bottle_base, dtype=np.float64))
+        if len(self._bed_med_buffer) > N:
+            self._bed_med_buffer.pop(0)
+        if len(self._bed_med_buffer) < N:
+            self.get_logger().warn(
+                f"[BED] 홈 좌표 수집 중: {len(self._bed_med_buffer)}/{N} (중앙값 계산용)",
+                throttle_duration_sec=1.0)
+            return None
+        med = np.median(np.array(self._bed_med_buffer), axis=0)
+        return med
 
     def shutdown_once(self):
 
@@ -2084,14 +2237,20 @@ class PointCloudRansacTest(Node):
         if getattr(self, "pregrasp_align_timer", None) is not None:
             self.pregrasp_align_timer.cancel()
             self.pregrasp_align_timer = None
-        self.get_logger().warn("수평 재정렬 완료 → 직진 전진")
+        self.get_logger().warn(
+            f"★★★ 수평 재정렬 완료 → 전진 시작 "
+            f"(bed_mode={self.bed_mode}, advancing={self.advancing})")
         self.send_forward_to_bottle_15cm()
 
     def send_forward_to_bottle_15cm(self):
         self.update_gripper_tcp_position()
 
-        if self.latest_bottle_base is None:
-            self.get_logger().warn("전진 실패: latest_bottle_base 없음")
+        # ★ latest_bottle_base 가 아니라 저장된 grasp_target_point 로 가드 (2026-06-18).
+        #   XY 보정 후 2초 정렬 대기 중 YOLO 가 물병을 한 프레임 놓치면 latest_bottle_base=None 이 돼
+        #   "전진 실패"로 조용히 포인트클라우드 복귀하던 문제. 전진은 어차피 접근 시점에 고정한
+        #   grasp_target_point 로 가므로 그걸로 판단.
+        if getattr(self, "grasp_target_point", None) is None and self.latest_bottle_base is None:
+            self.get_logger().warn("전진 실패: grasp_target_point/latest_bottle_base 둘 다 없음")
             return
 
         if self.current_tcp_pos is None:
@@ -2130,11 +2289,30 @@ class PointCloudRansacTest(Node):
             dist_to_bottle = raw_forward_dist
             max_forward = 0.40   # 안전 상한
 
-            # ★ 전진은 저장한 grasp 목표점 G(=물병중심 −margin)로 직진. 도착 위치가 어디든 항상 G에 멈춤.
-            #   (거리 고정 방식은 standoff 도착 오차만큼 빗나가서 폐기)
-            if getattr(self, "grasp_target_point", None) is not None:
+            # ★ 베드 전진거리 = ||저장된 물병좌표(홈) − 지금 TCP|| (2026-06-18 사용자 설계).
+            #   지금 TCP = XY 보정 + 그리퍼 정렬이 끝난 '전진 직전' 실제 위치(보정 이동분 반영).
+            #   이 거리만큼 그리퍼 축(direction) 방향으로 직진. (공구축 직진이라 특이점에 덜 걸림)
+            #   물병은 홈 저장값 → 도착 후 depth 데드존이라 못 재도 무관.
+            if self.bed_mode and getattr(self, "grasp_target_point", None) is not None:
+                G = np.array(self.grasp_target_point, dtype=np.float64)
+                forward_dist = float(np.linalg.norm(G - p_tcp))
+                forward_dist += 0.02   # ★ 하드코딩 2cm 더 전진 (물병 확실히 잡게)
+                if forward_dist > max_forward:
+                    forward_dist = max_forward
+                    self.get_logger().warn(f"전진거리 상한 제한 → {max_forward*100:.0f}cm")
+                self.bed_forward_dist = forward_dist
+                self.last_forward_dist_cm = forward_dist * 100.0   # 화면표시
+                target_pos = p_tcp + direction * forward_dist
+                self.get_logger().warn(
+                    f"전진(베드): 거리=||물병−보정후TCP||={forward_dist*100:.1f}cm "
+                    f"물병=({G[0]:.3f},{G[1]:.3f},{G[2]:.3f}) "
+                    f"TCP=({p_tcp[0]:.3f},{p_tcp[1]:.3f},{p_tcp[2]:.3f}) → 그리퍼축 직진"
+                )
+            elif getattr(self, "grasp_target_point", None) is not None:
                 target_pos = np.array(self.grasp_target_point, dtype=np.float64)
-                target_pos = target_pos + direction * 0.05   # ★ 보정 후 전진 5cm 추가 (하드코딩, 3→5 2026-06-16)
+                if not self.bed_mode:
+                    # 테이블 모드: 물병 중심 + 그리퍼 방향 1cm (5cm→1cm 2026-06-18, 중심 살짝 지나쳐 잡음)
+                    target_pos = target_pos + direction * 0.01
                 forward_dist = float(np.linalg.norm(target_pos - p_tcp))
                 # 안전상한: G가 너무 멀면 그 방향으로만 제한
                 if forward_dist > max_forward:
@@ -2142,8 +2320,8 @@ class PointCloudRansacTest(Node):
                     forward_dist = max_forward
                     self.get_logger().warn(f"전진거리 상한 제한 → {max_forward*100:.0f}cm")
                 self.get_logger().warn(
-                    f"전진: 저장 grasp점 G로 직진 dist={forward_dist*100:.1f}cm "
-                    f"(현재 측정 raw={raw_forward_dist*100:.1f}cm 참고)"
+                    f"전진: 홈 측정 grasp점 G로 직진 dist={forward_dist*100:.1f}cm "
+                    f"G=({target_pos[0]:.3f},{target_pos[1]:.3f},{target_pos[2]:.3f})"
                 )
             else:
                 # 폴백: G 없으면 현재 측정으로
@@ -2177,9 +2355,15 @@ class PointCloudRansacTest(Node):
             target_pose.pose.orientation = tf.transform.rotation
 
             self.get_logger().warn(
-                f"FORWARD 15cm 목표: "
-                f"x={target_pos[0]:.3f}, y={target_pos[1]:.3f}, z={target_pos[2]:.3f}"
+                f"★★★ FORWARD 목표 (bed={self.bed_mode}): "
+                f"tcp=({p_tcp[0]:.3f},{p_tcp[1]:.3f},{p_tcp[2]:.3f}) "
+                f"→ target=({target_pos[0]:.3f},{target_pos[1]:.3f},{target_pos[2]:.3f}) "
+                f"dist={forward_dist*100:.1f}cm "
+                f"dir=({direction[0]:.2f},{direction[1]:.2f},{direction[2]:.2f})"
             )
+
+            # ★ 화면 표시용: 계산한 전진거리 저장 (show_debug_image 가 매 프레임 그림)
+            self.last_forward_dist_cm = forward_dist * 100.0
 
             self.send_forward_cartesian_path(target_pose)
 
@@ -2463,9 +2647,16 @@ class PointCloudRansacTest(Node):
         self.get_logger().warn("Y SEARCH 대기 완료 → 반대쪽 준비")
 
     def show_debug_image(self, img):
-        
+
         if not self.show_visualization:
             return
+
+        # ★ 계산한 전진거리 화면 표시 (보정 후)
+        fwd = getattr(self, "last_forward_dist_cm", None)
+        if fwd is not None:
+            cv2.putText(
+                img, f"FORWARD: {fwd:.1f} cm",
+                (40, 290), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
 
         img_small = cv2.resize(img, (960, 540))
         cv2.imshow("PC RANSAC Test", img_small)
@@ -2597,6 +2788,11 @@ class PointCloudRansacTest(Node):
 
         cx_color = int((x1 + x2) / 2)
         cy_color = int((y1 + y2) / 2)
+
+        # ★ 화면 3분할 좌/중/우 판별용: 최신 bbox 중심 X + 이미지 폭 저장 (시각화는 안 함).
+        #   base-frame Y(depth) 대신 YOLO 박스 픽셀로 판단 → depth 노이즈 안 탐.
+        self.last_bottle_cx = cx_color
+        self.last_img_w = w
 
         bbox_w = x2 - x1
         bbox_h = y2 - y1
@@ -3030,7 +3226,15 @@ class PointCloudRansacTest(Node):
                     self.get_logger().warn(f"Rejected unsafe target: {bottle_base}")
                     return
 
-                locked_target = self.update_locked_target(bottle_base)
+                # ★ 베드 모드: lock(spread 거부) 대신 중앙값 N프레임으로 좌표 굳히기 (2026-06-18).
+                #   lock 은 depth 노이즈로 영영 안 끝나 포인트클라우드 무한반복 → 폐기.
+                #   median 은 데드락 없이 단일프레임 노이즈만 제거. 홈(depth 정상)에서 굳힌 값으로 접근/전진.
+                if self.bed_mode:
+                    locked_target = self.bed_median_target(bottle_base)
+                    if locked_target is not None:
+                        self.target_ever_locked = True
+                else:
+                    locked_target = self.update_locked_target(bottle_base)
 
                 if locked_target is None:
                     self.show_debug_image(img)
@@ -3118,7 +3322,10 @@ class PointCloudRansacTest(Node):
 
         target_point = np.array(self.latest_bottle_base, dtype=np.float64).copy()
 
-        self.send_move_group_goal(target_point)
+        if self.bed_mode:
+            self.send_bed_approach_goal(target_point)
+        else:
+            self.send_move_group_goal(target_point)
 
 PROCESSES = []
 LOCK_FILE = "/tmp/ur3_auto_run.lock"
