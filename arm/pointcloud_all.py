@@ -2311,8 +2311,8 @@ class PointCloudRansacTest(Node):
             elif getattr(self, "grasp_target_point", None) is not None:
                 target_pos = np.array(self.grasp_target_point, dtype=np.float64)
                 if not self.bed_mode:
-                    # 테이블 모드: 물병 중심 + 그리퍼 방향 1cm (5cm→1cm 2026-06-18, 중심 살짝 지나쳐 잡음)
-                    target_pos = target_pos + direction * 0.01
+                    # 테이블 모드: 물병 중심 + 그리퍼 방향 2cm (1cm→2cm 2026-06-18, 중심 살짝 지나쳐 잡음)
+                    target_pos = target_pos + direction * 0.02
                 forward_dist = float(np.linalg.norm(target_pos - p_tcp))
                 # 안전상한: G가 너무 멀면 그 방향으로만 제한
                 if forward_dist > max_forward:
